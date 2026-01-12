@@ -25,12 +25,10 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             { value: '', text: '-- Skip --' },
             { value: 'hierarchy', text: 'Hierarchy (Required)' },
             { value: 'itemid', text: 'Item ID / Part Number (Required)' },
-            { value: 'displayname', text: 'Display Name / Description' },
-            { value: 'salesdescription', text: 'Sales Description' },
-            { value: 'purchasedescription', text: 'Purchase Description' },
+            { value: 'displayname', text: 'Display Name / Description (sets all 3)' },
             { value: 'mpn', text: 'Manufacturer Part Number' },
             { value: 'manufacturer', text: 'Manufacturer' },
-            { value: 'vendor', text: 'Preferred Vendor Name' },
+            { value: 'vendor', text: 'Vendor Name (for Create Vendors option)' },
             { value: 'vendorpartnumber', text: 'Vendor Part Number' },
             { value: 'quantity', text: 'BOM Quantity' },
             { value: 'revision', text: 'Item Revision' },
@@ -230,6 +228,109 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             }).defaultValue = parsedData.headers.length;
             form.getField({ id: 'custpage_column_count' }).updateDisplayType({ displayType: serverWidget.FieldDisplayType.HIDDEN });
 
+            // Defaults Section
+            form.addFieldGroup({
+                id: 'custpage_defaults_group',
+                label: 'Item Defaults'
+            });
+
+            // Setup MRP Checkbox
+            const mrpCheckbox = form.addField({
+                id: 'custpage_setup_mrp',
+                type: serverWidget.FieldType.CHECKBOX,
+                label: 'Setup MRP',
+                container: 'custpage_defaults_group'
+            });
+            mrpCheckbox.defaultValue = 'T';
+            mrpCheckbox.setHelpText({ help: 'When checked: Assembly items use Master Production Scheduling, Inventory items use Material Requirements Planning. Creates Planning Item Category using Prospect Name. Configures varied lead times and lot sizing for demo.' });
+
+            // Create Vendors Checkbox
+            const createVendorsCheckbox = form.addField({
+                id: 'custpage_create_vendors',
+                type: serverWidget.FieldType.CHECKBOX,
+                label: 'Create Vendors from CSV',
+                container: 'custpage_defaults_group'
+            });
+            createVendorsCheckbox.defaultValue = 'F';
+            createVendorsCheckbox.setHelpText({ help: 'When checked: Creates vendor records from the Vendor column in CSV and links them to items. When unchecked: Uses the Default Vendor ID below.' });
+
+            // Default Vendor (used when Create Vendors is unchecked)
+            const vendorField = form.addField({
+                id: 'custpage_vendor_id',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Default Vendor ID',
+                container: 'custpage_defaults_group'
+            });
+            vendorField.defaultValue = 625;
+            vendorField.setHelpText({ help: 'Internal ID of vendor to add to inventory items when "Create Vendors from CSV" is unchecked (0 = none)' });
+
+            // Purchase Price
+            const purchasePriceField = form.addField({
+                id: 'custpage_purchase_price',
+                type: serverWidget.FieldType.CURRENCY,
+                label: 'Default Purchase Price',
+                container: 'custpage_defaults_group'
+            });
+            purchasePriceField.defaultValue = 1;
+
+            // Tax Schedule
+            const taxScheduleField = form.addField({
+                id: 'custpage_tax_schedule',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Tax Schedule ID',
+                container: 'custpage_defaults_group'
+            });
+            taxScheduleField.defaultValue = 1;
+            taxScheduleField.setHelpText({ help: 'Internal ID of the tax schedule to apply to items' });
+
+            // Locations
+            const locationsField = form.addField({
+                id: 'custpage_locations',
+                type: serverWidget.FieldType.TEXT,
+                label: 'Location IDs (comma-separated)',
+                container: 'custpage_defaults_group'
+            });
+            locationsField.defaultValue = '2,13';
+            locationsField.setHelpText({ help: 'Internal IDs of locations to configure for each item' });
+
+            // Item Location Defaults Group (shown when MRP is unchecked)
+            form.addFieldGroup({
+                id: 'custpage_loc_defaults_group',
+                label: 'Item Location Defaults (used when Setup MRP is unchecked)'
+            });
+
+            const prefStockField = form.addField({
+                id: 'custpage_pref_stock',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Preferred Stock Level',
+                container: 'custpage_loc_defaults_group'
+            });
+            prefStockField.defaultValue = 1000;
+
+            const reorderPointField = form.addField({
+                id: 'custpage_reorder_point',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Reorder Point',
+                container: 'custpage_loc_defaults_group'
+            });
+            reorderPointField.defaultValue = 600;
+
+            const safetyStockField = form.addField({
+                id: 'custpage_safety_stock',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Safety Stock Level',
+                container: 'custpage_loc_defaults_group'
+            });
+            safetyStockField.defaultValue = 100;
+
+            const leadTimeField = form.addField({
+                id: 'custpage_lead_time',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Lead Time (days)',
+                container: 'custpage_loc_defaults_group'
+            });
+            leadTimeField.defaultValue = 7;
+
             // Column Mapping Section
             form.addFieldGroup({
                 id: 'custpage_mapping_group',
@@ -382,7 +483,30 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 throw new Error('Item ID / Part Number column must be mapped');
             }
 
+            // Collect defaults
+            const locationStr = params.custpage_locations || '2,13';
+            const locationIds = locationStr.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id) && id > 0);
+
+            const setupMRP = params.custpage_setup_mrp === 'T';
+            const createVendors = params.custpage_create_vendors === 'T';
+
+            const defaults = {
+                setupMRP: setupMRP,
+                createVendors: createVendors,
+                taxScheduleId: parseInt(params.custpage_tax_schedule) || 1,
+                vendorId: parseInt(params.custpage_vendor_id) || 0,
+                purchasePrice: parseFloat(params.custpage_purchase_price) || 1,
+                locationIds: locationIds,
+                itemLocationDefaults: {
+                    preferredstocklevel: parseInt(params.custpage_pref_stock) || 1000,
+                    reorderpoint: parseInt(params.custpage_reorder_point) || 600,
+                    safetystocklevel: parseInt(params.custpage_safety_stock) || 100,
+                    leadtime: parseInt(params.custpage_lead_time) || 7
+                }
+            };
+
             log.audit('Mappings Collected', JSON.stringify(mappings));
+            log.audit('Defaults Collected', JSON.stringify(defaults));
 
             // Save config JSON file alongside CSV
             const configData = {
@@ -390,6 +514,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 csvFileId: fileId,
                 csvFileName: fileName,
                 mappings: mappings,
+                defaults: defaults,
                 createdDate: new Date().toISOString()
             };
 

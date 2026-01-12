@@ -5,41 +5,51 @@
  */
 
 /**
- * BOM Import Map/Reduce Script v2
+ * BOM Import Map/Reduce Script v3
  * 
  * Purpose: Import items, BOMs, and BOM revisions from CSV file using hierarchy notation
  * 
- * Hierarchy Notation:
- * - 1.0 = Top-level assembly
- * - 1.1, 1.2, 1.3 = Direct children of 1.0
- * - 1.2.1, 1.2.2 = Children of 1.2 (making 1.2 a sub-assembly)
- * 
- * Type Determination:
- * - If a hierarchy value is a prefix of any other row's hierarchy, it's an assembly
- * - Otherwise, it's an inventory item
+ * Features:
+ * - Hierarchy-based BOM structure (1.0, 1.1, 1.1.1 notation)
+ * - Automatic type detection (assembly vs. inventory based on hierarchy)
+ * - MRP setup with Planning Item Category, varied lead times, lot sizing
+ * - Optional vendor creation from CSV
+ * - Duplicate handling (items created once, linked to multiple BOMs)
+ * - IDEMPOTENT: Re-runnable to complete partial imports
+ *   - Checks/creates locations on existing items
+ *   - Links BOMs to assembly items
  * 
  * Script Parameters:
  * - custscript_bom_config_file_id: Internal ID of the JSON config file
- * 
- * Processing Order:
- * 1. GET INPUT: Parse CSV and config, determine types from hierarchy
- * 2. MAP: Emit items with processing order keys
- * 3. REDUCE: Create items (inventory first, then assemblies)
- * 4. SUMMARIZE: Create BOMs and BOM Revisions
  */
 
 define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
     function(record, search, file, runtime, cache, format) {
 
-        // Configuration constants
-        const LOCATION_IDS = [2, 13];
-        const VENDOR_ID = 625; // CDW
-        const TAX_SCHEDULE_ID = 1;
-        const ITEM_LOCATION_DEFAULTS = {
-            preferredstocklevel: 1000,
-            reorderpoint: 600,
-            safetystocklevel: 100,
-            leadtime: 7
+        // Default configuration (fallbacks)
+        const DEFAULT_CONFIG = {
+            locationIds: [2, 13],
+            subsidiaryId: 2,  // USA subsidiary
+            vendorId: 625,
+            purchasePrice: 1,
+            taxScheduleId: 1,
+            setupMRP: true,
+            createVendors: false,
+            itemLocationDefaults: {
+                preferredstocklevel: 1000,
+                reorderpoint: 600,
+                safetystocklevel: 100,
+                leadtime: 7
+            }
+        };
+
+        // MRP Rotation values for demo variety
+        const MRP_ROTATION = {
+            leadTimes: [5, 14, 30, 100],
+            lotSizingMethods: ['LOT_FOR_LOT', 'FIXED_LOT_MULTIPLE', 'PERIODS_OF_SUPPLY'],
+            moqValues: [10, 25, 50, 100],
+            fixedLotMultiple: 10,
+            periodicLotSizeDays: 7
         };
 
         /**
@@ -67,8 +77,38 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.audit('Config Loaded', JSON.stringify({
                     prospectName: config.prospectName,
                     csvFileId: config.csvFileId,
-                    mappings: config.mappings
+                    mappings: config.mappings,
+                    defaults: config.defaults
                 }));
+
+                // Set defaults from config or use fallbacks
+                let DEFAULTS = config.defaults || DEFAULT_CONFIG;
+                
+                // Ensure all required properties exist
+                DEFAULTS.locationIds = DEFAULTS.locationIds || DEFAULT_CONFIG.locationIds;
+                DEFAULTS.subsidiaryId = DEFAULTS.subsidiaryId || DEFAULT_CONFIG.subsidiaryId;
+                DEFAULTS.vendorId = DEFAULTS.vendorId !== undefined ? DEFAULTS.vendorId : DEFAULT_CONFIG.vendorId;
+                DEFAULTS.purchasePrice = DEFAULTS.purchasePrice || DEFAULT_CONFIG.purchasePrice;
+                DEFAULTS.taxScheduleId = DEFAULTS.taxScheduleId || DEFAULT_CONFIG.taxScheduleId;
+                DEFAULTS.setupMRP = DEFAULTS.setupMRP !== undefined ? DEFAULTS.setupMRP : DEFAULT_CONFIG.setupMRP;
+                DEFAULTS.createVendors = DEFAULTS.createVendors !== undefined ? DEFAULTS.createVendors : DEFAULT_CONFIG.createVendors;
+                DEFAULTS.itemLocationDefaults = DEFAULTS.itemLocationDefaults || DEFAULT_CONFIG.itemLocationDefaults;
+
+                log.audit('Defaults Applied', JSON.stringify(DEFAULTS));
+
+                // If MRP is enabled, create Planning Item Category
+                let planningItemCategoryId = null;
+                if (DEFAULTS.setupMRP) {
+                    planningItemCategoryId = createOrGetPlanningItemCategory(config.prospectName);
+                    log.audit('Planning Item Category', 'ID: ' + planningItemCategoryId);
+                }
+
+                // If Create Vendors is enabled, pre-create vendors from CSV
+                let vendorCache = {};
+                if (DEFAULTS.createVendors) {
+                    vendorCache = createVendorsFromCSV(config.csvFileId, config.mappings);
+                    log.audit('Vendors Created', JSON.stringify(vendorCache));
+                }
 
                 // Load CSV file
                 const csvFile = file.load({ id: config.csvFileId });
@@ -102,7 +142,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         rowNumber: row.rowNumber,
                         hierarchy: null,
                         itemFields: {},
-                        bomFields: {}
+                        bomFields: {},
+                        vendorName: null
                     };
 
                     Object.keys(config.mappings).forEach(colIndex => {
@@ -117,6 +158,13 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             mapped.bomFields.quantity = parseFloat(value) || 1;
                         } else if (fieldName === 'memo') {
                             mapped.bomFields.memo = value.trim();
+                        } else if (fieldName === 'vendor') {
+                            mapped.vendorName = value.trim();
+                        } else if (fieldName === 'displayname') {
+                            // Map to all three description fields
+                            mapped.itemFields.displayname = value.trim();
+                            mapped.itemFields.salesdescription = value.trim();
+                            mapped.itemFields.purchasedescription = value.trim();
                         } else {
                             // Item field
                             mapped.itemFields[fieldName] = value.trim();
@@ -131,6 +179,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 // Determine which rows are assemblies based on hierarchy
                 const hierarchySet = new Set(mappedRows.map(r => r.hierarchy));
                 
+                // Track inventory item index for MRP rotation
+                let inventoryIndex = 0;
+
                 mappedRows.forEach(row => {
                     // Check if any other hierarchy starts with this one + "."
                     const isAssembly = Array.from(hierarchySet).some(h => 
@@ -139,13 +190,18 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     row.isAssembly = isAssembly;
                     row.recordType = isAssembly ? 'assemblyitem' : 'inventoryitem';
 
+                    // Assign MRP rotation index for inventory items
+                    if (!isAssembly) {
+                        row.mrpRotationIndex = inventoryIndex++;
+                    }
+
                     // Determine parent hierarchy
                     const parts = row.hierarchy.split('.');
                     if (parts.length > 1) {
                         parts.pop();
                         row.parentHierarchy = parts.join('.');
                     } else {
-                        row.parentHierarchy = null; // Top-level item
+                        row.parentHierarchy = null;
                     }
                 });
 
@@ -154,32 +210,24 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 const assemblyCount = mappedRows.filter(r => r.isAssembly).length;
                 log.audit('Type Breakdown', 'Inventory: ' + inventoryCount + ', Assembly: ' + assemblyCount);
 
-                // Store config in cache for summarize stage
+                // Store all rows in cache for summarize stage
                 const importCache = cache.getCache({
                     name: 'BOM_IMPORT_CACHE',
                     scope: cache.Scope.PRIVATE
                 });
 
                 importCache.put({
-                    key: 'IMPORT_CONFIG',
-                    value: JSON.stringify({
-                        prospectName: config.prospectName,
-                        configFileId: configFileId,
-                        csvFileId: config.csvFileId
-                    }),
-                    ttl: 7200
-                });
-
-                // Store all rows for summarize stage (for BOM creation)
-                importCache.put({
                     key: 'ALL_ROWS',
                     value: JSON.stringify(mappedRows),
                     ttl: 7200
                 });
 
-                // Add prospect name to each row
+                // Add prospect name, defaults, and other config to each row
                 mappedRows.forEach(row => {
                     row.prospectName = config.prospectName;
+                    row.defaults = DEFAULTS;
+                    row.planningItemCategoryId = planningItemCategoryId;
+                    row.vendorCache = vendorCache;
                 });
 
                 log.audit('GET INPUT DATA - Complete', 'Returning ' + mappedRows.length + ' rows');
@@ -190,6 +238,114 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.error('getInputData Error', e.toString() + '\n' + e.stack);
                 throw e;
             }
+        }
+
+        /**
+         * Create or get existing Planning Item Category
+         */
+        function createOrGetPlanningItemCategory(prospectName) {
+            try {
+                const categorySearch = search.create({
+                    type: 'planningitemcategory',
+                    filters: [['name', 'is', prospectName]],
+                    columns: ['internalid']
+                });
+
+                const results = categorySearch.run().getRange({ start: 0, end: 1 });
+                
+                if (results.length > 0) {
+                    log.debug('Planning Item Category Exists', 'Name: ' + prospectName);
+                    return results[0].getValue('internalid');
+                }
+
+                const categoryRec = record.create({
+                    type: 'planningitemcategory',
+                    isDynamic: true
+                });
+
+                categoryRec.setValue({ fieldId: 'name', value: prospectName });
+
+                const categoryId = categoryRec.save();
+                log.audit('Planning Item Category Created', 'Name: ' + prospectName + ', ID: ' + categoryId);
+
+                return categoryId;
+
+            } catch (e) {
+                log.error('Planning Item Category Error', e.toString());
+                return null;
+            }
+        }
+
+        /**
+         * Create vendors from CSV data
+         */
+        function createVendorsFromCSV(csvFileId, mappings) {
+            const vendorCache = {};
+
+            try {
+                let vendorColIndex = null;
+                Object.keys(mappings).forEach(colIndex => {
+                    if (mappings[colIndex] === 'vendor') {
+                        vendorColIndex = parseInt(colIndex);
+                    }
+                });
+
+                if (vendorColIndex === null) {
+                    log.debug('No Vendor Column', 'Vendor column not mapped');
+                    return vendorCache;
+                }
+
+                const csvFile = file.load({ id: csvFileId });
+                const csvContent = csvFile.getContents();
+                const lines = csvContent.split('\n').filter(line => line.trim());
+
+                const vendorNames = new Set();
+                for (let i = 1; i < lines.length; i++) {
+                    const rowData = parseRow(lines[i]);
+                    const vendorName = rowData[vendorColIndex];
+                    if (vendorName && vendorName.trim()) {
+                        vendorNames.add(vendorName.trim());
+                    }
+                }
+
+                log.audit('Unique Vendors Found', Array.from(vendorNames).join(', '));
+
+                vendorNames.forEach(vendorName => {
+                    try {
+                        const vendorSearch = search.create({
+                            type: 'vendor',
+                            filters: [['entityid', 'is', vendorName]],
+                            columns: ['internalid']
+                        });
+
+                        const results = vendorSearch.run().getRange({ start: 0, end: 1 });
+
+                        if (results.length > 0) {
+                            vendorCache[vendorName] = results[0].getValue('internalid');
+                            log.debug('Vendor Exists', vendorName + ' (ID: ' + vendorCache[vendorName] + ')');
+                        } else {
+                            const vendorRec = record.create({
+                                type: 'vendor',
+                                isDynamic: true
+                            });
+
+                            vendorRec.setValue({ fieldId: 'companyname', value: vendorName });
+                            vendorRec.setValue({ fieldId: 'subsidiary', value: DEFAULT_CONFIG.subsidiaryId });
+
+                            const vendorId = vendorRec.save();
+                            vendorCache[vendorName] = vendorId;
+                            log.audit('Vendor Created', vendorName + ' (ID: ' + vendorId + ')');
+                        }
+                    } catch (e) {
+                        log.error('Vendor Creation Error', vendorName + ': ' + e.toString());
+                    }
+                });
+
+            } catch (e) {
+                log.error('createVendorsFromCSV Error', e.toString());
+            }
+
+            return vendorCache;
         }
 
         /**
@@ -230,8 +386,6 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             try {
                 const rowData = JSON.parse(context.value);
 
-                // Emit with keys that ensure processing order
-                // Inventory items first, then assemblies
                 if (rowData.isAssembly) {
                     context.write('2_assembly', context.value);
                 } else {
@@ -244,7 +398,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         }
 
         /**
-         * REDUCE - Create items
+         * REDUCE - Create items and ensure locations exist
          */
         function reduce(context) {
             try {
@@ -255,38 +409,31 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.audit('REDUCE - ' + stage, 'Processing ' + records.length + ' records');
                 log.audit('========================================', '');
 
-                const importCache = cache.getCache({
-                    name: 'BOM_IMPORT_CACHE',
-                    scope: cache.Scope.PRIVATE
-                });
-
                 let created = 0;
                 let skipped = 0;
                 let failed = 0;
+                let locationsCreated = 0;
 
                 records.forEach(rowData => {
                     try {
                         const externalId = rowData.prospectName + '_' + rowData.itemFields.itemid;
 
                         // Check if item already exists
-                        const existingItem = findExistingItem(externalId);
+                        const existingItemId = findItemByExternalId(externalId);
 
-                        if (existingItem) {
-                            // Item exists, just cache the ID
-                            log.debug('Item Exists', 'Item: ' + rowData.itemFields.itemid + ' (ID: ' + existingItem + ')');
-                            
-                            const cacheKey = rowData.prospectName + '_' + rowData.itemFields.itemid;
-                            importCache.put({ key: cacheKey, value: existingItem.toString(), ttl: 7200 });
-                            
+                        if (existingItemId) {
+                            log.debug('Item Exists', 'Item: ' + rowData.itemFields.itemid + ' (ID: ' + existingItemId + ')');
                             skipped++;
+
+                            // IDEMPOTENT: Check and create missing locations for existing item
+                            const locsAdded = ensureItemLocations(existingItemId, rowData);
+                            locationsCreated += locsAdded;
+
                         } else {
                             // Create new item
                             const itemId = createItem(rowData);
 
                             if (itemId) {
-                                const cacheKey = rowData.prospectName + '_' + rowData.itemFields.itemid;
-                                importCache.put({ key: cacheKey, value: itemId.toString(), ttl: 7200 });
-                                
                                 log.audit('Item Created', rowData.recordType + ': ' + rowData.itemFields.itemid + ' (ID: ' + itemId + ')');
                                 created++;
                             } else {
@@ -299,7 +446,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     }
                 });
 
-                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed);
+                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated);
 
             } catch (e) {
                 log.error('reduce Error', 'Stage: ' + context.key + ', Error: ' + e.toString() + '\n' + e.stack);
@@ -307,9 +454,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         }
 
         /**
-         * Find existing item by external ID
+         * Find item by external ID
          */
-        function findExistingItem(externalId) {
+        function findItemByExternalId(externalId) {
             try {
                 const itemSearch = search.create({
                     type: 'item',
@@ -332,6 +479,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
          * Create Item (Inventory or Assembly)
          */
         function createItem(rowData) {
+            const defaults = rowData.defaults || DEFAULT_CONFIG;
+            
             const itemRec = record.create({
                 type: rowData.recordType,
                 isDynamic: true
@@ -353,27 +502,37 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 }
             });
 
-            // Set standard fields
+            // Set standard defaults
             itemRec.setValue({ fieldId: 'includechildren', value: true });
-            itemRec.setValue({ fieldId: 'taxschedule', value: TAX_SCHEDULE_ID });
-
+            itemRec.setValue({ fieldId: 'taxschedule', value: defaults.taxScheduleId });
+            
+            // Units Type = Each (ID: 1)
             try {
-                itemRec.setValue({ fieldId: 'replenishmentmethod', value: 'REORDER_POINT' });
-                itemRec.setValue({ fieldId: 'autoreorderpoint', value: false });
-                itemRec.setValue({ fieldId: 'autoleadtime', value: false });
-                itemRec.setValue({ fieldId: 'autopreferredstocklevel', value: false });
+                itemRec.setValue({ fieldId: 'unitstype', value: 1 });
             } catch (e) {
-                log.debug('Planning Fields Warning', e.toString());
+                log.debug('Units Type Warning', e.toString());
             }
 
-            // Add CDW as vendor (for inventory items)
-            if (rowData.recordType === 'inventoryitem') {
+            // Weight = 1
+            try {
+                itemRec.setValue({ fieldId: 'weight', value: 1 });
+            } catch (e) {
+                log.debug('Weight Warning', e.toString());
+            }
+
+            // NOTE: Skipping replenishment method and planning item category for now
+            // These require correct enum values that we haven't verified yet
+            // TODO: Add back once we confirm correct values from NetSuite
+
+            // Add vendor (inventory items only)
+            const vendorId = getVendorForItem(rowData, defaults);
+            if (vendorId && rowData.recordType === 'inventoryitem') {
                 try {
                     itemRec.selectNewLine({ sublistId: 'itemvendor' });
                     itemRec.setCurrentSublistValue({
                         sublistId: 'itemvendor',
                         fieldId: 'vendor',
-                        value: VENDOR_ID
+                        value: vendorId
                     });
                     itemRec.setCurrentSublistValue({
                         sublistId: 'itemvendor',
@@ -383,8 +542,17 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     itemRec.setCurrentSublistValue({
                         sublistId: 'itemvendor',
                         fieldId: 'purchaseprice',
-                        value: 1
+                        value: defaults.purchasePrice
                     });
+                    
+                    if (rowData.itemFields.vendorpartnumber) {
+                        itemRec.setCurrentSublistValue({
+                            sublistId: 'itemvendor',
+                            fieldId: 'vendorcode',
+                            value: rowData.itemFields.vendorpartnumber
+                        });
+                    }
+                    
                     itemRec.commitLine({ sublistId: 'itemvendor' });
                 } catch (e) {
                     log.debug('Vendor Warning', e.toString());
@@ -394,60 +562,186 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             const itemId = itemRec.save();
 
             // Create item locations
-            createItemLocations(itemId, rowData.recordType);
+            createItemLocations(itemId, rowData);
 
             return itemId;
         }
 
         /**
-         * Create Item Locations
+         * Get vendor ID for item
          */
-        function createItemLocations(itemId, recordType) {
-            LOCATION_IDS.forEach(locationId => {
+        function getVendorForItem(rowData, defaults) {
+            if (defaults.createVendors && rowData.vendorName && rowData.vendorCache) {
+                const vendorId = rowData.vendorCache[rowData.vendorName];
+                if (vendorId) {
+                    return vendorId;
+                }
+            }
+            
+            if (defaults.vendorId > 0) {
+                return defaults.vendorId;
+            }
+
+            return null;
+        }
+
+        /**
+         * Create Item Locations using itemlocationconfiguration records
+         */
+        function createItemLocations(itemId, rowData) {
+            const defaults = rowData.defaults || DEFAULT_CONFIG;
+            const locationIds = defaults.locationIds || [];
+
+            locationIds.forEach(locationId => {
                 try {
-                    const itemRec = record.load({
-                        type: recordType,
-                        id: itemId,
-                        isDynamic: true
+                    // Use itemlocationconfiguration record to add location
+                    const itemLocConfigRec = record.create({
+                        type: 'itemlocationconfiguration',
+                        defaultValues: {
+                            item: itemId
+                        }
                     });
 
-                    itemRec.selectNewLine({ sublistId: 'locations' });
-                    itemRec.setCurrentSublistValue({
-                        sublistId: 'locations',
-                        fieldId: 'location',
-                        value: locationId
+                    // Set subsidiary (required)
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'subsidiary', 
+                        value: defaults.subsidiaryId || DEFAULT_CONFIG.subsidiaryId 
                     });
-                    itemRec.setCurrentSublistValue({
-                        sublistId: 'locations',
-                        fieldId: 'preferredstocklevel',
-                        value: ITEM_LOCATION_DEFAULTS.preferredstocklevel
-                    });
-                    itemRec.setCurrentSublistValue({
-                        sublistId: 'locations',
-                        fieldId: 'reorderpoint',
-                        value: ITEM_LOCATION_DEFAULTS.reorderpoint
-                    });
-                    itemRec.setCurrentSublistValue({
-                        sublistId: 'locations',
-                        fieldId: 'safetystocklevel',
-                        value: ITEM_LOCATION_DEFAULTS.safetystocklevel
-                    });
-                    itemRec.setCurrentSublistValue({
-                        sublistId: 'locations',
-                        fieldId: 'leadtime',
-                        value: ITEM_LOCATION_DEFAULTS.leadtime
-                    });
-                    itemRec.commitLine({ sublistId: 'locations' });
 
-                    itemRec.save();
+                    // Set location
+                    itemLocConfigRec.setValue({ fieldId: 'location', value: locationId });
+
+                    // Set basic location defaults
+                    const locDefaults = defaults.itemLocationDefaults || {};
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'preferredstocklevel', 
+                        value: locDefaults.preferredstocklevel || 1000 
+                    });
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'reorderpoint', 
+                        value: locDefaults.reorderpoint || 600 
+                    });
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'safetystocklevel', 
+                        value: locDefaults.safetystocklevel || 100 
+                    });
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'leadtime', 
+                        value: locDefaults.leadtime || 7 
+                    });
+
+                    const configId = itemLocConfigRec.save();
+
+                    log.debug('Item Location Created', 'Item: ' + itemId + ', Location: ' + locationId + ', Config ID: ' + configId);
+
                 } catch (e) {
-                    log.debug('Item Location Warning', 'Item: ' + itemId + ', Location: ' + locationId + ', Error: ' + e.toString());
+                    log.error('Item Location Error', 'Item: ' + itemId + ', Location: ' + locationId + ', Error: ' + e.toString());
                 }
             });
         }
 
         /**
-         * SUMMARIZE - Create BOMs and BOM Revisions
+         * IDEMPOTENT: Ensure locations exist for an existing item
+         * Uses itemlocationconfiguration records (not sublist) for existing items
+         * Returns number of locations added
+         */
+        function ensureItemLocations(itemId, rowData) {
+            const defaults = rowData.defaults || DEFAULT_CONFIG;
+            const locationIds = defaults.locationIds || [];
+            let locationsAdded = 0;
+
+            // Get existing locations for this item
+            const existingLocations = getExistingItemLocations(itemId);
+            
+            locationIds.forEach(locationId => {
+                if (existingLocations.includes(parseInt(locationId))) {
+                    log.debug('Location Exists', 'Item: ' + itemId + ', Location: ' + locationId);
+                    return;
+                }
+
+                try {
+                    // Use itemlocationconfiguration record to add location to existing item
+                    const itemLocConfigRec = record.create({
+                        type: 'itemlocationconfiguration',
+                        defaultValues: {
+                            item: itemId
+                        }
+                    });
+
+                    // Set subsidiary (required)
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'subsidiary', 
+                        value: defaults.subsidiaryId || DEFAULT_CONFIG.subsidiaryId 
+                    });
+
+                    // Set location
+                    itemLocConfigRec.setValue({ fieldId: 'location', value: locationId });
+
+                    // Set location-specific inventory settings
+                    const locDefaults = defaults.itemLocationDefaults || {};
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'preferredstocklevel', 
+                        value: locDefaults.preferredstocklevel || 1000 
+                    });
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'reorderpoint', 
+                        value: locDefaults.reorderpoint || 600 
+                    });
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'safetystocklevel', 
+                        value: locDefaults.safetystocklevel || 100 
+                    });
+                    itemLocConfigRec.setValue({ 
+                        fieldId: 'leadtime', 
+                        value: locDefaults.leadtime || 7 
+                    });
+
+                    const configId = itemLocConfigRec.save();
+
+                    log.audit('Location Added to Existing Item', 'Item: ' + itemId + ', Location: ' + locationId + ', Config ID: ' + configId);
+                    locationsAdded++;
+
+                } catch (e) {
+                    log.error('Add Location Error', 'Item: ' + itemId + ', Location: ' + locationId + ', Error: ' + e.toString());
+                }
+            });
+
+            return locationsAdded;
+        }
+
+        /**
+         * Get list of existing location IDs for an item by searching itemlocationconfiguration records
+         */
+        function getExistingItemLocations(itemId) {
+            const locations = [];
+            
+            try {
+                // Search itemlocationconfiguration records for this item
+                const locConfigSearch = search.create({
+                    type: 'itemlocationconfiguration',
+                    filters: [['item', 'anyof', itemId]],
+                    columns: ['location']
+                });
+
+                locConfigSearch.run().each(function(result) {
+                    const locId = result.getValue('location');
+                    if (locId) {
+                        locations.push(parseInt(locId));
+                    }
+                    return true;
+                });
+
+                log.debug('Existing Locations Found', 'Item: ' + itemId + ', Locations: ' + JSON.stringify(locations));
+
+            } catch (e) {
+                log.debug('Get Existing Locations Error', e.toString());
+            }
+
+            return locations;
+        }
+
+        /**
+         * SUMMARIZE - Create BOMs, BOM Revisions, and link to assemblies
          */
         function summarize(context) {
             try {
@@ -455,41 +749,29 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.audit('SUMMARIZE - Creating BOMs', '');
                 log.audit('========================================', '');
 
-                const importCache = cache.getCache({
-                    name: 'BOM_IMPORT_CACHE',
-                    scope: cache.Scope.PRIVATE
-                });
+                const scriptObj = runtime.getCurrentScript();
+                const configFileId = scriptObj.getParameter({ name: 'custscript_bom_config_file_id' });
+                const configFile = file.load({ id: configFileId });
+                const config = JSON.parse(configFile.getContents());
+                const prospectName = config.prospectName;
+                const defaults = config.defaults || DEFAULT_CONFIG;
 
-                // Get config from cache
-                let config;
-                try {
-                    const configStr = importCache.get({ key: 'IMPORT_CONFIG' });
-                    config = JSON.parse(configStr);
-                } catch (e) {
-                    log.error('Config Cache Miss', 'Attempting to reload from script parameter');
-                    
-                    // Fallback: reload from script parameter
-                    const scriptObj = runtime.getCurrentScript();
-                    const configFileId = scriptObj.getParameter({ name: 'custscript_bom_config_file_id' });
-                    const configFile = file.load({ id: configFileId });
-                    const fullConfig = JSON.parse(configFile.getContents());
-                    config = {
-                        prospectName: fullConfig.prospectName,
-                        csvFileId: fullConfig.csvFileId
-                    };
-                }
+                log.audit('Config Reloaded', 'Prospect: ' + prospectName);
 
-                // Get all rows from cache
+                // Get rows from cache or re-parse
                 let allRows;
                 try {
+                    const importCache = cache.getCache({
+                        name: 'BOM_IMPORT_CACHE',
+                        scope: cache.Scope.PRIVATE
+                    });
                     const rowsStr = importCache.get({ key: 'ALL_ROWS' });
                     allRows = JSON.parse(rowsStr);
+                    log.audit('Rows from Cache', allRows.length + ' rows');
                 } catch (e) {
-                    log.error('Rows Cache Miss', 'Cannot create BOMs without row data');
-                    return;
+                    log.audit('Cache Miss', 'Re-parsing CSV file');
+                    allRows = reParseCSVForSummarize(config);
                 }
-
-                const prospectName = config.prospectName;
 
                 // Find all assemblies
                 const assemblies = allRows.filter(row => row.isAssembly);
@@ -500,40 +782,36 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 let bomsFailed = 0;
                 let revisionsCreated = 0;
                 let revisionsFailed = 0;
+                let linksCreated = 0;
 
                 assemblies.forEach(assembly => {
                     try {
                         const assemblyItemId = assembly.itemFields.itemid;
                         const assemblyHierarchy = assembly.hierarchy;
 
-                        // Get assembly internal ID from cache
-                        const cacheKey = prospectName + '_' + assemblyItemId;
-                        const assemblyInternalId = importCache.get({ key: cacheKey });
+                        // Get assembly internal ID
+                        const assemblyExternalId = prospectName + '_' + assemblyItemId;
+                        const assemblyInternalId = findItemByExternalId(assemblyExternalId);
 
                         if (!assemblyInternalId) {
-                            log.error('Assembly Not Cached', 'Assembly ' + assemblyItemId + ' not found in cache');
+                            log.error('Assembly Not Found', 'Assembly ' + assemblyItemId + ' not found');
                             bomsFailed++;
                             return;
                         }
 
-                        // Find direct children (one level deeper)
-                        const directChildren = allRows.filter(row => {
-                            if (row.parentHierarchy === assemblyHierarchy) {
-                                return true;
-                            }
-                            return false;
-                        });
+                        // Find direct children
+                        const directChildren = allRows.filter(row => row.parentHierarchy === assemblyHierarchy);
 
                         if (directChildren.length === 0) {
-                            log.audit('No Children', 'Assembly ' + assemblyItemId + ' has no direct children - skipping BOM');
+                            log.audit('No Children', 'Assembly ' + assemblyItemId + ' has no direct children');
                             return;
                         }
 
-                        // Build component list with internal IDs
+                        // Build component list
                         const components = [];
                         directChildren.forEach(child => {
-                            const childCacheKey = prospectName + '_' + child.itemFields.itemid;
-                            const childInternalId = importCache.get({ key: childCacheKey });
+                            const childExternalId = prospectName + '_' + child.itemFields.itemid;
+                            const childInternalId = findItemByExternalId(childExternalId);
 
                             if (childInternalId) {
                                 components.push({
@@ -542,7 +820,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                                     quantity: child.bomFields.quantity || 1
                                 });
                             } else {
-                                log.error('Component Not Cached', 'Component ' + child.itemFields.itemid + ' not found in cache');
+                                log.error('Component Not Found', 'Component ' + child.itemFields.itemid + ' not found');
                             }
                         });
 
@@ -552,20 +830,33 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             return;
                         }
 
-                        // Create BOM
-                        const bomId = createBOM(assemblyItemId, assemblyInternalId, prospectName);
+                        log.audit('Creating BOM', 'Assembly: ' + assemblyItemId + ' with ' + components.length + ' components');
 
-                        if (bomId) {
-                            bomsCreated++;
+                        // Create or get BOM
+                        const bomResult = createOrGetBOM(assemblyItemId, assemblyInternalId, prospectName, defaults);
 
-                            // Create BOM Revision with components
-                            const revisionCreated = createBOMRevision(bomId, assemblyItemId, components, prospectName);
+                        if (bomResult.bomId) {
+                            if (bomResult.created) {
+                                bomsCreated++;
+                            }
+
+                            // Create or get BOM Revision
+                            const revisionResult = createOrGetBOMRevision(bomResult.bomId, assemblyItemId, components, prospectName);
                             
-                            if (revisionCreated) {
+                            if (revisionResult.created) {
                                 revisionsCreated++;
+                            } else if (revisionResult.exists) {
+                                // Revision already exists
                             } else {
                                 revisionsFailed++;
                             }
+
+                            // IDEMPOTENT: Link BOM to assembly item if not already linked
+                            const linked = ensureBOMLinkedToAssembly(assemblyInternalId, bomResult.bomId, assemblyItemId);
+                            if (linked) {
+                                linksCreated++;
+                            }
+
                         } else {
                             bomsFailed++;
                         }
@@ -585,8 +876,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.audit('BOMs Failed', bomsFailed);
                 log.audit('Revisions Created', revisionsCreated);
                 log.audit('Revisions Failed', revisionsFailed);
+                log.audit('BOM Links Created', linksCreated);
 
-                // Log any Map/Reduce stage errors
                 logStageErrors(context);
 
                 log.audit('========================================', '');
@@ -599,18 +890,18 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         }
 
         /**
-         * Create BOM
+         * Create or get existing BOM
          */
-        function createBOM(assemblyItemId, assemblyInternalId, prospectName) {
+        function createOrGetBOM(assemblyItemId, assemblyInternalId, prospectName, defaults) {
             try {
                 const bomName = assemblyItemId + '_BOM';
                 const externalId = prospectName + '_' + bomName;
 
                 // Check if BOM already exists
-                const existingBom = findExistingBOM(externalId);
+                const existingBom = findBOMByExternalId(externalId);
                 if (existingBom) {
                     log.debug('BOM Exists', 'BOM: ' + bomName + ' (ID: ' + existingBom + ')');
-                    return existingBom;
+                    return { bomId: existingBom, created: false };
                 }
 
                 const bomRec = record.create({
@@ -619,7 +910,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 });
 
                 bomRec.setValue({ fieldId: 'name', value: bomName });
-                bomRec.setValue({ fieldId: 'subsidiary', value: 1 });
+                bomRec.setValue({ fieldId: 'subsidiary', value: defaults.subsidiaryId || DEFAULT_CONFIG.subsidiaryId });
                 bomRec.setValue({ fieldId: 'includechildren', value: true });
                 bomRec.setValue({ fieldId: 'externalid', value: externalId });
 
@@ -627,18 +918,18 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
 
                 log.audit('BOM Created', 'BOM: ' + bomName + ' (ID: ' + bomId + ')');
 
-                return bomId;
+                return { bomId: bomId, created: true };
 
             } catch (e) {
                 log.error('BOM Creation Failed', 'Assembly: ' + assemblyItemId + ', Error: ' + e.toString());
-                return null;
+                return { bomId: null, created: false };
             }
         }
 
         /**
-         * Find existing BOM by external ID
+         * Find BOM by external ID
          */
-        function findExistingBOM(externalId) {
+        function findBOMByExternalId(externalId) {
             try {
                 const bomSearch = search.create({
                     type: 'bom',
@@ -658,18 +949,18 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         }
 
         /**
-         * Create BOM Revision with components
+         * Create or get existing BOM Revision with components
          */
-        function createBOMRevision(bomId, assemblyItemId, components, prospectName) {
+        function createOrGetBOMRevision(bomId, assemblyItemId, components, prospectName) {
             try {
                 const revisionName = assemblyItemId + '_REV_A';
                 const externalId = prospectName + '_' + revisionName;
 
                 // Check if revision already exists
-                const existingRevision = findExistingBOMRevision(externalId);
+                const existingRevision = findBOMRevisionByExternalId(externalId);
                 if (existingRevision) {
                     log.debug('BOM Revision Exists', 'Revision: ' + revisionName + ' (ID: ' + existingRevision + ')');
-                    return true;
+                    return { revisionId: existingRevision, created: false, exists: true };
                 }
 
                 const yesterday = new Date();
@@ -712,18 +1003,18 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
 
                 log.audit('BOM Revision Created', 'Revision: ' + revisionName + ' (ID: ' + revisionId + ') with ' + componentsAdded + ' components');
 
-                return true;
+                return { revisionId: revisionId, created: true, exists: false };
 
             } catch (e) {
                 log.error('BOM Revision Failed', 'Assembly: ' + assemblyItemId + ', Error: ' + e.toString());
-                return false;
+                return { revisionId: null, created: false, exists: false };
             }
         }
 
         /**
-         * Find existing BOM Revision by external ID
+         * Find BOM Revision by external ID
          */
-        function findExistingBOMRevision(externalId) {
+        function findBOMRevisionByExternalId(externalId) {
             try {
                 const revSearch = search.create({
                     type: 'bomrevision',
@@ -740,6 +1031,150 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.debug('BOM Revision Search Error', e.toString());
             }
             return null;
+        }
+
+        /**
+         * IDEMPOTENT: Ensure BOM is linked to assembly item via billofmaterials sublist
+         * Also ensures masterdefault is set on the BOM link
+         * Returns true if link was created or updated, false if already complete
+         */
+        function ensureBOMLinkedToAssembly(assemblyInternalId, bomId, assemblyItemId) {
+            try {
+                // Load assembly to check if BOM is already linked
+                const assemblyRec = record.load({
+                    type: 'assemblyitem',
+                    id: assemblyInternalId,
+                    isDynamic: true
+                });
+
+                // Check existing BOM links on the billofmaterials sublist
+                const lineCount = assemblyRec.getLineCount({ sublistId: 'billofmaterials' });
+                
+                for (let i = 0; i < lineCount; i++) {
+                    const linkedBomId = assemblyRec.getSublistValue({
+                        sublistId: 'billofmaterials',
+                        fieldId: 'billofmaterials',
+                        line: i
+                    });
+                    
+                    if (linkedBomId == bomId) {
+                        // BOM is already linked - check if masterdefault is set
+                        const isMasterDefault = assemblyRec.getSublistValue({
+                            sublistId: 'billofmaterials',
+                            fieldId: 'masterdefault',
+                            line: i
+                        });
+                        
+                        if (isMasterDefault) {
+                            log.debug('BOM Already Linked with Master Default', 'Assembly: ' + assemblyItemId + ', BOM ID: ' + bomId);
+                            return false;
+                        }
+                        
+                        // Update existing line to set masterdefault
+                        assemblyRec.selectLine({ sublistId: 'billofmaterials', line: i });
+                        assemblyRec.setCurrentSublistValue({
+                            sublistId: 'billofmaterials',
+                            fieldId: 'masterdefault',
+                            value: true
+                        });
+                        assemblyRec.commitLine({ sublistId: 'billofmaterials' });
+                        assemblyRec.save();
+                        
+                        log.audit('BOM Master Default Set', 'Assembly: ' + assemblyItemId + ' (ID: ' + assemblyInternalId + '), BOM ID: ' + bomId);
+                        return true;
+                    }
+                }
+
+                // BOM not linked yet - add it
+                assemblyRec.selectNewLine({ sublistId: 'billofmaterials' });
+                assemblyRec.setCurrentSublistValue({
+                    sublistId: 'billofmaterials',
+                    fieldId: 'billofmaterials',
+                    value: bomId
+                });
+                // Set as Master Default
+                assemblyRec.setCurrentSublistValue({
+                    sublistId: 'billofmaterials',
+                    fieldId: 'masterdefault',
+                    value: true
+                });
+                assemblyRec.commitLine({ sublistId: 'billofmaterials' });
+
+                assemblyRec.save();
+
+                log.audit('BOM Linked to Assembly', 'Assembly: ' + assemblyItemId + ' (ID: ' + assemblyInternalId + '), BOM ID: ' + bomId + ', Master Default: true');
+                return true;
+
+            } catch (e) {
+                log.error('BOM Link Failed', 'Assembly: ' + assemblyItemId + ', BOM ID: ' + bomId + ', Error: ' + e.toString());
+                return false;
+            }
+        }
+
+        /**
+         * Re-parse CSV for summarize stage if cache missed
+         */
+        function reParseCSVForSummarize(config) {
+            const csvFile = file.load({ id: config.csvFileId });
+            const csvContent = csvFile.getContents();
+            const lines = csvContent.split('\n').filter(line => line.trim());
+
+            const allRows = [];
+            for (let i = 1; i < lines.length; i++) {
+                const rowData = parseRow(lines[i]);
+                if (rowData.some(cell => cell.trim())) {
+                    allRows.push({
+                        rowNumber: i + 1,
+                        cells: rowData
+                    });
+                }
+            }
+
+            const mappedRows = allRows.map(row => {
+                const mapped = {
+                    rowNumber: row.rowNumber,
+                    hierarchy: null,
+                    itemFields: {},
+                    bomFields: {}
+                };
+
+                Object.keys(config.mappings).forEach(colIndex => {
+                    const fieldName = config.mappings[colIndex];
+                    const value = row.cells[parseInt(colIndex)] || '';
+
+                    if (!value.trim()) return;
+
+                    if (fieldName === 'hierarchy') {
+                        mapped.hierarchy = value.trim();
+                    } else if (fieldName === 'quantity') {
+                        mapped.bomFields.quantity = parseFloat(value) || 1;
+                    } else if (fieldName === 'itemid') {
+                        mapped.itemFields.itemid = value.trim();
+                    }
+                });
+
+                return mapped;
+            }).filter(row => row.hierarchy && row.itemFields.itemid);
+
+            // Determine assembly status
+            const hierarchySet = new Set(mappedRows.map(r => r.hierarchy));
+            
+            mappedRows.forEach(row => {
+                const isAssembly = Array.from(hierarchySet).some(h => 
+                    h !== row.hierarchy && h.startsWith(row.hierarchy + '.')
+                );
+                row.isAssembly = isAssembly;
+
+                const parts = row.hierarchy.split('.');
+                if (parts.length > 1) {
+                    parts.pop();
+                    row.parentHierarchy = parts.join('.');
+                } else {
+                    row.parentHierarchy = null;
+                }
+            });
+
+            return mappedRows;
         }
 
         /**

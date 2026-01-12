@@ -106,7 +106,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 // If Create Vendors is enabled, pre-create vendors from CSV
                 let vendorCache = {};
                 if (DEFAULTS.createVendors) {
-                    vendorCache = createVendorsFromCSV(config.csvFileId, config.mappings);
+                    vendorCache = createVendorsFromCSV(config.csvFileId, config.mappings, DEFAULTS);
                     log.audit('Vendors Created', JSON.stringify(vendorCache));
                 }
 
@@ -279,7 +279,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         /**
          * Create vendors from CSV data
          */
-        function createVendorsFromCSV(csvFileId, mappings) {
+        function createVendorsFromCSV(csvFileId, mappings, defaults) {
             const vendorCache = {};
 
             try {
@@ -330,7 +330,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             });
 
                             vendorRec.setValue({ fieldId: 'companyname', value: vendorName });
-                            vendorRec.setValue({ fieldId: 'subsidiary', value: DEFAULT_CONFIG.subsidiaryId });
+                            vendorRec.setValue({ fieldId: 'subsidiary', value: defaults.vendorSubsidiaryId || DEFAULT_CONFIG.subsidiaryId });
 
                             const vendorId = vendorRec.save();
                             vendorCache[vendorName] = vendorId;

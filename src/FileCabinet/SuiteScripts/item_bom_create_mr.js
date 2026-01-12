@@ -543,12 +543,12 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 }
 
                 // Set Replenishment Method
-                // 1 = Master Production Scheduling (assemblies)
-                // 2 = Material Requirements Planning (inventory)
+                // 'MPS' = Master Production Scheduling (assemblies)
+                // 'MRP' = Material Requirements Planning (inventory)
                 try {
-                    const replenishmentMethod = rowData.isAssembly ? 1 : 2;
+                    const replenishmentMethod = rowData.isAssembly ? 'MPS' : 'MRP';
                     itemRec.setValue({
-                        fieldId: 'supplyReplenishmentMethod',
+                        fieldId: 'supplyreplenishmentmethod',
                         value: replenishmentMethod
                     });
                     log.debug('Replenishment Method Set', replenishmentMethod + ' for ' + rowData.recordType);
@@ -781,16 +781,16 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 }
 
                 // Check/set Replenishment Method
-                // 1 = Master Production Scheduling (assemblies)
-                // 2 = Material Requirements Planning (inventory)
-                const expectedMethod = rowData.isAssembly ? 1 : 2;
-                const currentMethod = itemRec.getValue({ fieldId: 'supplyReplenishmentMethod' });
+                // 'MPS' = Master Production Scheduling (assemblies)
+                // 'MRP' = Material Requirements Planning (inventory)
+                const expectedMethod = rowData.isAssembly ? 'MPS' : 'MRP';
+                const currentMethod = itemRec.getValue({ fieldId: 'supplyreplenishmentmethod' });
 
-                // Check if not set or set to wrong value (3 = Reorder Point is the default)
-                if (!currentMethod || currentMethod == 3 || currentMethod != expectedMethod) {
+                // Check if not set or set to wrong value ('REORDER_POINT' is the default)
+                if (!currentMethod || currentMethod === 'REORDER_POINT' || currentMethod !== expectedMethod) {
                     try {
                         itemRec.setValue({
-                            fieldId: 'supplyReplenishmentMethod',
+                            fieldId: 'supplyreplenishmentmethod',
                             value: expectedMethod
                         });
                         needsSave = true;

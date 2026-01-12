@@ -413,6 +413,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 let skipped = 0;
                 let failed = 0;
                 let locationsCreated = 0;
+                let mrpUpdatesCount = 0;
 
                 records.forEach(rowData => {
                     try {
@@ -428,6 +429,12 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             // IDEMPOTENT: Check and create missing locations for existing item
                             const locsAdded = ensureItemLocations(existingItemId, rowData);
                             locationsCreated += locsAdded;
+
+                            // IDEMPOTENT: Check and update MRP settings on existing item
+                            const mrpUpdated = ensureMRPSettings(existingItemId, rowData);
+                            if (mrpUpdated) {
+                                mrpUpdatesCount++;
+                            }
 
                         } else {
                             // Create new item
@@ -446,7 +453,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     }
                 });
 
-                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated);
+                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated + ', MRP Updated: ' + mrpUpdatesCount);
 
             } catch (e) {
                 log.error('reduce Error', 'Stage: ' + context.key + ', Error: ' + e.toString() + '\n' + e.stack);
@@ -733,6 +740,80 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             });
 
             return locationsAdded;
+        }
+
+        /**
+         * IDEMPOTENT: Ensure MRP settings are configured on existing items
+         * Returns true if any updates were made, false if already configured
+         */
+        function ensureMRPSettings(itemId, rowData) {
+            const defaults = rowData.defaults || DEFAULT_CONFIG;
+
+            // Skip if MRP setup is disabled
+            if (!defaults.setupMRP) {
+                return false;
+            }
+
+            let needsSave = false;
+
+            try {
+                const itemRec = record.load({
+                    type: rowData.recordType,
+                    id: itemId,
+                    isDynamic: true
+                });
+
+                // Check/set Planning Item Category
+                if (rowData.planningItemCategoryId) {
+                    const currentCategory = itemRec.getValue({ fieldId: 'planningitemcategory' });
+                    if (!currentCategory) {
+                        try {
+                            itemRec.setValue({
+                                fieldId: 'planningitemcategory',
+                                value: rowData.planningItemCategoryId
+                            });
+                            needsSave = true;
+                            log.debug('Planning Item Category Updated', 'Item: ' + itemId + ', Category: ' + rowData.planningItemCategoryId);
+                        } catch (e) {
+                            log.debug('Planning Item Category Update Warning', 'Item: ' + itemId + ', Error: ' + e.toString());
+                        }
+                    }
+                }
+
+                // Check/set Replenishment Method
+                // 1 = Master Production Scheduling (assemblies)
+                // 2 = Material Requirements Planning (inventory)
+                const expectedMethod = rowData.isAssembly ? 1 : 2;
+                const currentMethod = itemRec.getValue({ fieldId: 'supplyReplenishmentMethod' });
+
+                // Check if not set or set to wrong value (3 = Reorder Point is the default)
+                if (!currentMethod || currentMethod == 3 || currentMethod != expectedMethod) {
+                    try {
+                        itemRec.setValue({
+                            fieldId: 'supplyReplenishmentMethod',
+                            value: expectedMethod
+                        });
+                        needsSave = true;
+                        log.debug('Replenishment Method Updated', 'Item: ' + itemId + ', Method: ' + expectedMethod + ' (was: ' + currentMethod + ')');
+                    } catch (e) {
+                        log.debug('Replenishment Method Update Warning', 'Item: ' + itemId + ', Error: ' + e.toString());
+                    }
+                }
+
+                // Save if any changes were made
+                if (needsSave) {
+                    itemRec.save();
+                    log.audit('MRP Settings Updated', 'Item: ' + itemId);
+                    return true;
+                } else {
+                    log.debug('MRP Settings Already Configured', 'Item: ' + itemId);
+                    return false;
+                }
+
+            } catch (e) {
+                log.error('ensureMRPSettings Error', 'Item: ' + itemId + ', Error: ' + e.toString());
+                return false;
+            }
         }
 
         /**

@@ -520,9 +520,35 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.debug('Weight Warning', e.toString());
             }
 
-            // NOTE: Skipping replenishment method and planning item category for now
-            // These require correct enum values that we haven't verified yet
-            // TODO: Add back once we confirm correct values from NetSuite
+            // MRP Setup (if enabled)
+            if (defaults.setupMRP) {
+                // Set Planning Item Category
+                if (rowData.planningItemCategoryId) {
+                    try {
+                        itemRec.setValue({
+                            fieldId: 'planningitemcategory',
+                            value: rowData.planningItemCategoryId
+                        });
+                        log.debug('Planning Item Category Set', rowData.planningItemCategoryId);
+                    } catch (e) {
+                        log.debug('Planning Item Category Warning', e.toString());
+                    }
+                }
+
+                // Set Replenishment Method
+                // 1 = Master Production Scheduling (assemblies)
+                // 2 = Material Requirements Planning (inventory)
+                try {
+                    const replenishmentMethod = rowData.isAssembly ? 1 : 2;
+                    itemRec.setValue({
+                        fieldId: 'supplyReplenishmentMethod',
+                        value: replenishmentMethod
+                    });
+                    log.debug('Replenishment Method Set', replenishmentMethod + ' for ' + rowData.recordType);
+                } catch (e) {
+                    log.debug('Replenishment Method Warning', e.toString());
+                }
+            }
 
             // Add vendor (inventory items only)
             const vendorId = getVendorForItem(rowData, defaults);

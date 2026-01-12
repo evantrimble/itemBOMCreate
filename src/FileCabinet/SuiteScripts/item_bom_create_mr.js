@@ -1101,7 +1101,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         });
                         bomRevRec.setCurrentSublistValue({
                             sublistId: 'component',
-                            fieldId: 'quantity',
+                            fieldId: 'bomquantity',
                             value: component.quantity
                         });
                         bomRevRec.commitLine({ sublistId: 'component' });

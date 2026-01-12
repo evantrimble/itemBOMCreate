@@ -917,6 +917,11 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         // Build component list
                         const components = [];
                         directChildren.forEach(child => {
+                            // Debug: Log component data to troubleshoot quantity issues
+                            log.debug('Component Data', 'Item: ' + child.itemFields.itemid +
+                                ', bomFields: ' + JSON.stringify(child.bomFields) +
+                                ', quantity: ' + child.bomFields.quantity);
+
                             const childExternalId = prospectName + '_' + child.itemFields.itemid;
                             const childInternalId = findItemByExternalId(childExternalId);
 

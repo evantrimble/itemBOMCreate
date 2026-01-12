@@ -254,6 +254,16 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             createVendorsCheckbox.defaultValue = 'F';
             createVendorsCheckbox.setHelpText({ help: 'When checked: Creates vendor records from the Vendor column in CSV and links them to items. When unchecked: Uses the Default Vendor ID below.' });
 
+            // Vendor Subsidiary ID (for newly created vendors)
+            const vendorSubsidiaryField = form.addField({
+                id: 'custpage_vendor_subsidiary',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Vendor Subsidiary ID',
+                container: 'custpage_defaults_group'
+            });
+            vendorSubsidiaryField.defaultValue = 2;
+            vendorSubsidiaryField.setHelpText({ help: 'Subsidiary to assign to newly created vendors (default: 2 = United States)' });
+
             // Default Vendor (used when Create Vendors is unchecked)
             const vendorField = form.addField({
                 id: 'custpage_vendor_id',
@@ -495,6 +505,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 createVendors: createVendors,
                 taxScheduleId: parseInt(params.custpage_tax_schedule) || 1,
                 vendorId: parseInt(params.custpage_vendor_id) || 0,
+                vendorSubsidiaryId: parseInt(params.custpage_vendor_subsidiary) || 2,
                 purchasePrice: parseFloat(params.custpage_purchase_price) || 1,
                 locationIds: locationIds,
                 itemLocationDefaults: {

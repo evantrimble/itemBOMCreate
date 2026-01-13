@@ -52,6 +52,16 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             periodicLotSizeDays: 7
         };
 
+        // MRP Location-level settings for demo variety
+        const MRP_LOCATION_ROTATION = {
+            leadTimes: [5, 14, 30, 100],
+            lotSizingMethods: ['LOT_FOR_LOT', 'FIXED_LOT_SIZE', 'FIXED_LOT_MULTIPLE', 'PERIODIC_LOT_SIZE'],
+            fixedLotSize: 100,
+            fixedLotMultiple: 25,
+            periodicLotSizeDays: 7,
+            periodicLotSizeType: 'WEEKLY'
+        };
+
         /**
          * GET INPUT DATA
          */
@@ -414,6 +424,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 let failed = 0;
                 let locationsCreated = 0;
                 let mrpUpdatesCount = 0;
+                let locationMRPUpdated = 0;
 
                 records.forEach(rowData => {
                     try {
@@ -436,6 +447,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                                 mrpUpdatesCount++;
                             }
 
+                            // IDEMPOTENT: Check and update MRP settings on existing item locations
+                            locationMRPUpdated += ensureLocationMRPSettings(existingItemId, rowData);
+
                         } else {
                             // Create new item
                             const itemId = createItem(rowData);
@@ -453,7 +467,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     }
                 });
 
-                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated + ', MRP Updated: ' + mrpUpdatesCount);
+                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated + ', MRP Updated: ' + mrpUpdatesCount + ', Location MRP Updated: ' + locationMRPUpdated);
 
             } catch (e) {
                 log.error('reduce Error', 'Stage: ' + context.key + ', Error: ' + e.toString() + '\n' + e.stack);
@@ -624,8 +638,10 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         function createItemLocations(itemId, rowData) {
             const defaults = rowData.defaults || DEFAULT_CONFIG;
             const locationIds = defaults.locationIds || [];
+            const isAssembly = rowData.isAssembly || false;
+            const rotationIndex = rowData.mrpRotationIndex || 0;
 
-            locationIds.forEach(locationId => {
+            locationIds.forEach((locationId, locIndex) => {
                 try {
                     // Use itemlocationconfiguration record to add location
                     const itemLocConfigRec = record.create({
@@ -636,9 +652,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     });
 
                     // Set subsidiary (required)
-                    itemLocConfigRec.setValue({ 
-                        fieldId: 'subsidiary', 
-                        value: defaults.subsidiaryId || DEFAULT_CONFIG.subsidiaryId 
+                    itemLocConfigRec.setValue({
+                        fieldId: 'subsidiary',
+                        value: defaults.subsidiaryId || DEFAULT_CONFIG.subsidiaryId
                     });
 
                     // Set location
@@ -646,26 +662,50 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
 
                     // Set basic location defaults
                     const locDefaults = defaults.itemLocationDefaults || {};
-                    itemLocConfigRec.setValue({ 
-                        fieldId: 'preferredstocklevel', 
-                        value: locDefaults.preferredstocklevel || 1000 
-                    });
-                    itemLocConfigRec.setValue({ 
-                        fieldId: 'reorderpoint', 
-                        value: locDefaults.reorderpoint || 600 
-                    });
-                    itemLocConfigRec.setValue({ 
-                        fieldId: 'safetystocklevel', 
-                        value: locDefaults.safetystocklevel || 100 
-                    });
-                    itemLocConfigRec.setValue({ 
-                        fieldId: 'leadtime', 
-                        value: locDefaults.leadtime || 7 
-                    });
+                    itemLocConfigRec.setValue({ fieldId: 'preferredstocklevel', value: locDefaults.preferredstocklevel || 1000 });
+                    itemLocConfigRec.setValue({ fieldId: 'reorderpoint', value: locDefaults.reorderpoint || 600 });
+                    itemLocConfigRec.setValue({ fieldId: 'safetystocklevel', value: locDefaults.safetystocklevel || 100 });
 
-                    const configId = itemLocConfigRec.save();
+                    // ========== MRP SETTINGS ==========
+                    if (defaults.setupMRP) {
+                        // Supply Type: BUILD for assemblies, PURCHASE for inventory
+                        const supplyType = isAssembly ? 'BUILD' : 'PURCHASE';
+                        itemLocConfigRec.setValue({ fieldId: 'supplytype', value: supplyType });
 
-                    log.debug('Item Location Created', 'Item: ' + itemId + ', Location: ' + locationId + ', Config ID: ' + configId);
+                        // Lead Time: Rotate through values
+                        const leadTimeIndex = (rotationIndex + locIndex) % MRP_LOCATION_ROTATION.leadTimes.length;
+                        const leadTime = MRP_LOCATION_ROTATION.leadTimes[leadTimeIndex];
+                        itemLocConfigRec.setValue({ fieldId: 'leadtime', value: leadTime });
+
+                        // Lot Sizing Method: Rotate through methods
+                        const lotSizingIndex = rotationIndex % MRP_LOCATION_ROTATION.lotSizingMethods.length;
+                        const lotSizingMethod = MRP_LOCATION_ROTATION.lotSizingMethods[lotSizingIndex];
+                        itemLocConfigRec.setValue({ fieldId: 'supplylotsizingmethod', value: lotSizingMethod });
+
+                        // Set parameters based on lot sizing method
+                        if (lotSizingMethod === 'FIXED_LOT_SIZE') {
+                            itemLocConfigRec.setValue({ fieldId: 'fixedlotsize', value: MRP_LOCATION_ROTATION.fixedLotSize });
+                        } else if (lotSizingMethod === 'FIXED_LOT_MULTIPLE') {
+                            itemLocConfigRec.setValue({ fieldId: 'fixedlotmultiple', value: MRP_LOCATION_ROTATION.fixedLotMultiple });
+                        } else if (lotSizingMethod === 'PERIODIC_LOT_SIZE') {
+                            itemLocConfigRec.setValue({ fieldId: 'periodiclotsizedays', value: MRP_LOCATION_ROTATION.periodicLotSizeDays });
+                            itemLocConfigRec.setValue({ fieldId: 'periodiclotsizetype', value: MRP_LOCATION_ROTATION.periodicLotSizeType });
+                        }
+
+                        const configId = itemLocConfigRec.save();
+
+                        log.debug('Item Location Created',
+                            'Item: ' + itemId + ', Location: ' + locationId +
+                            ', SupplyType: ' + supplyType + ', LotSizing: ' + lotSizingMethod +
+                            ', LeadTime: ' + leadTime + ', Config ID: ' + configId);
+                    } else {
+                        // No MRP - use UI lead time
+                        itemLocConfigRec.setValue({ fieldId: 'leadtime', value: locDefaults.leadtime || 7 });
+
+                        const configId = itemLocConfigRec.save();
+
+                        log.debug('Item Location Created', 'Item: ' + itemId + ', Location: ' + locationId + ', Config ID: ' + configId);
+                    }
 
                 } catch (e) {
                     log.error('Item Location Error', 'Item: ' + itemId + ', Location: ' + locationId + ', Error: ' + e.toString());
@@ -814,6 +854,100 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 log.error('ensureMRPSettings Error', 'Item: ' + itemId + ', Error: ' + e.toString());
                 return false;
             }
+        }
+
+        /**
+         * IDEMPOTENT: Ensure MRP settings are configured on existing item location records
+         * Returns number of locations updated
+         */
+        function ensureLocationMRPSettings(itemId, rowData) {
+            const defaults = rowData.defaults || DEFAULT_CONFIG;
+
+            // Skip if MRP setup is disabled
+            if (!defaults.setupMRP) {
+                return 0;
+            }
+
+            const isAssembly = rowData.isAssembly || false;
+            const rotationIndex = rowData.mrpRotationIndex || 0;
+            let locationsUpdated = 0;
+
+            try {
+                const locConfigSearch = search.create({
+                    type: 'itemlocationconfiguration',
+                    filters: [['item', 'anyof', itemId]],
+                    columns: ['internalid', 'location', 'supplytype', 'supplylotsizingmethod', 'leadtime']
+                });
+
+                const results = [];
+                locConfigSearch.run().each(function(result) {
+                    results.push({
+                        configId: result.getValue('internalid'),
+                        locationId: result.getValue('location'),
+                        currentSupplyType: result.getValue('supplytype'),
+                        currentLotSizing: result.getValue('supplylotsizingmethod'),
+                        currentLeadTime: result.getValue('leadtime')
+                    });
+                    return true;
+                });
+
+                results.forEach((locConfig, locIndex) => {
+                    try {
+                        const expectedSupplyType = isAssembly ? 'BUILD' : 'PURCHASE';
+                        const leadTimeIndex = (rotationIndex + locIndex) % MRP_LOCATION_ROTATION.leadTimes.length;
+                        const expectedLeadTime = MRP_LOCATION_ROTATION.leadTimes[leadTimeIndex];
+                        const lotSizingIndex = rotationIndex % MRP_LOCATION_ROTATION.lotSizingMethods.length;
+                        const expectedLotSizing = MRP_LOCATION_ROTATION.lotSizingMethods[lotSizingIndex];
+
+                        const needsUpdate =
+                            locConfig.currentSupplyType !== expectedSupplyType ||
+                            !locConfig.currentLotSizing ||
+                            locConfig.currentLotSizing !== expectedLotSizing ||
+                            !locConfig.currentLeadTime ||
+                            parseInt(locConfig.currentLeadTime) !== expectedLeadTime;
+
+                        if (!needsUpdate) {
+                            log.debug('Location MRP Already Configured', 'Item: ' + itemId + ', Location: ' + locConfig.locationId);
+                            return;
+                        }
+
+                        const configRec = record.load({
+                            type: 'itemlocationconfiguration',
+                            id: locConfig.configId,
+                            isDynamic: true
+                        });
+
+                        configRec.setValue({ fieldId: 'supplytype', value: expectedSupplyType });
+                        configRec.setValue({ fieldId: 'leadtime', value: expectedLeadTime });
+                        configRec.setValue({ fieldId: 'supplylotsizingmethod', value: expectedLotSizing });
+
+                        if (expectedLotSizing === 'FIXED_LOT_SIZE') {
+                            configRec.setValue({ fieldId: 'fixedlotsize', value: MRP_LOCATION_ROTATION.fixedLotSize });
+                        } else if (expectedLotSizing === 'FIXED_LOT_MULTIPLE') {
+                            configRec.setValue({ fieldId: 'fixedlotmultiple', value: MRP_LOCATION_ROTATION.fixedLotMultiple });
+                        } else if (expectedLotSizing === 'PERIODIC_LOT_SIZE') {
+                            configRec.setValue({ fieldId: 'periodiclotsizedays', value: MRP_LOCATION_ROTATION.periodicLotSizeDays });
+                            configRec.setValue({ fieldId: 'periodiclotsizetype', value: MRP_LOCATION_ROTATION.periodicLotSizeType });
+                        }
+
+                        configRec.save();
+                        locationsUpdated++;
+
+                        log.audit('Location MRP Updated',
+                            'Item: ' + itemId + ', Location: ' + locConfig.locationId +
+                            ', SupplyType: ' + expectedSupplyType + ', LotSizing: ' + expectedLotSizing +
+                            ', LeadTime: ' + expectedLeadTime);
+
+                    } catch (e) {
+                        log.error('Location MRP Update Error', 'Item: ' + itemId + ', Config: ' + locConfig.configId + ', Error: ' + e.toString());
+                    }
+                });
+
+            } catch (e) {
+                log.error('ensureLocationMRPSettings Error', 'Item: ' + itemId + ', Error: ' + e.toString());
+            }
+
+            return locationsUpdated;
         }
 
         /**

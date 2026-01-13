@@ -425,6 +425,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 let locationsCreated = 0;
                 let mrpUpdatesCount = 0;
                 let locationMRPUpdated = 0;
+                let vendorSubsidiaryUpdated = 0;
 
                 records.forEach(rowData => {
                     try {
@@ -450,6 +451,11 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             // IDEMPOTENT: Check and update MRP settings on existing item locations
                             locationMRPUpdated += ensureLocationMRPSettings(existingItemId, rowData);
 
+                            // IDEMPOTENT: Check and update vendor subsidiary on existing item
+                            if (ensureVendorSubsidiary(existingItemId, rowData.recordType, rowData)) {
+                                vendorSubsidiaryUpdated++;
+                            }
+
                         } else {
                             // Create new item
                             const itemId = createItem(rowData);
@@ -467,7 +473,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     }
                 });
 
-                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated + ', MRP Updated: ' + mrpUpdatesCount + ', Location MRP Updated: ' + locationMRPUpdated);
+                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated + ', MRP Updated: ' + mrpUpdatesCount + ', Location MRP Updated: ' + locationMRPUpdated + ', Vendor Subsidiary Updated: ' + vendorSubsidiaryUpdated);
 
             } catch (e) {
                 log.error('reduce Error', 'Stage: ' + context.key + ', Error: ' + e.toString() + '\n' + e.stack);
@@ -591,7 +597,12 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         fieldId: 'purchaseprice',
                         value: defaults.purchasePrice
                     });
-                    
+                    itemRec.setCurrentSublistValue({
+                        sublistId: 'itemvendor',
+                        fieldId: 'subsidiary',
+                        value: defaults.vendorSubsidiaryId || defaults.subsidiaryId
+                    });
+
                     if (rowData.itemFields.vendorpartnumber) {
                         itemRec.setCurrentSublistValue({
                             sublistId: 'itemvendor',
@@ -948,6 +959,75 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             }
 
             return locationsUpdated;
+        }
+
+        /**
+         * IDEMPOTENT: Ensure vendor subsidiary is correct on existing items
+         * Returns true if any updates were made
+         */
+        function ensureVendorSubsidiary(itemId, recordType, rowData) {
+            const defaults = rowData.defaults || DEFAULT_CONFIG;
+            const expectedSubsidiary = defaults.vendorSubsidiaryId || defaults.subsidiaryId;
+
+            if (!expectedSubsidiary) {
+                return false;
+            }
+
+            try {
+                const itemRec = record.load({
+                    type: recordType,
+                    id: itemId,
+                    isDynamic: true
+                });
+
+                const lineCount = itemRec.getLineCount({ sublistId: 'itemvendor' });
+
+                if (lineCount === 0) {
+                    return false;
+                }
+
+                let updated = false;
+
+                for (let i = 0; i < lineCount; i++) {
+                    const currentSubsidiary = itemRec.getSublistValue({
+                        sublistId: 'itemvendor',
+                        fieldId: 'subsidiary',
+                        line: i
+                    });
+
+                    if (currentSubsidiary != expectedSubsidiary) {
+                        const vendorName = itemRec.getSublistText({
+                            sublistId: 'itemvendor',
+                            fieldId: 'vendor',
+                            line: i
+                        });
+
+                        itemRec.selectLine({ sublistId: 'itemvendor', line: i });
+                        itemRec.setCurrentSublistValue({
+                            sublistId: 'itemvendor',
+                            fieldId: 'subsidiary',
+                            value: expectedSubsidiary
+                        });
+                        itemRec.commitLine({ sublistId: 'itemvendor' });
+                        updated = true;
+
+                        log.audit('Vendor Subsidiary Updated',
+                            'Item: ' + itemId + ', Vendor: ' + vendorName +
+                            ', Old Subsidiary: ' + currentSubsidiary +
+                            ', New Subsidiary: ' + expectedSubsidiary);
+                    }
+                }
+
+                if (updated) {
+                    itemRec.save();
+                }
+
+                return updated;
+
+            } catch (e) {
+                log.error('ensureVendorSubsidiary Error', 'Item: ' + itemId + ', Error: ' + e.toString());
+                return false;
+            }
         }
 
         /**

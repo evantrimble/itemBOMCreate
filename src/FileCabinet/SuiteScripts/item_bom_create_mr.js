@@ -938,9 +938,11 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         const currentLeadTime = parseInt(locConfig.currentLeadTime) || 0;
 
                         // Compare normalized values
+                        // Note: Lead time just checks existence (> 0), not specific value
+                        // Rotation creates demo variety on first run; re-runs just verify it's set
                         const supplyTypeMatches = currentSupplyType === expectedSupplyType;
                         const lotSizingMatches = currentLotSizing === expectedLotSizing;
-                        const leadTimeMatches = currentLeadTime === expectedLeadTime;
+                        const leadTimeMatches = currentLeadTime > 0;
 
                         const needsUpdate = !supplyTypeMatches || !lotSizingMatches || !leadTimeMatches;
 
@@ -954,7 +956,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             'Item: ' + itemId + ', Location: ' + locConfig.locationId +
                             ', SupplyType: ' + currentSupplyType + ' -> ' + expectedSupplyType + ' (' + supplyTypeMatches + ')' +
                             ', LotSizing: ' + currentLotSizing + ' -> ' + expectedLotSizing + ' (' + lotSizingMatches + ')' +
-                            ', LeadTime: ' + currentLeadTime + ' -> ' + expectedLeadTime + ' (' + leadTimeMatches + ')');
+                            ', LeadTime: ' + currentLeadTime + ' (exists: ' + leadTimeMatches + ')');
 
                         const configRec = record.load({
                             type: 'itemlocationconfiguration',

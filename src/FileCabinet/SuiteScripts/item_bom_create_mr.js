@@ -931,17 +931,30 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         const lotSizingIndex = rotationIndex % MRP_LOCATION_ROTATION.lotSizingMethods.length;
                         const expectedLotSizing = MRP_LOCATION_ROTATION.lotSizingMethods[lotSizingIndex];
 
-                        const needsUpdate =
-                            locConfig.currentSupplyType !== expectedSupplyType ||
-                            !locConfig.currentLotSizing ||
-                            locConfig.currentLotSizing !== expectedLotSizing ||
-                            !locConfig.currentLeadTime ||
-                            parseInt(locConfig.currentLeadTime) !== expectedLeadTime;
+                        // Normalize current values for comparison
+                        // NetSuite search returns strings; values may be text labels or internal values
+                        const currentSupplyType = (locConfig.currentSupplyType || '').toString().toUpperCase();
+                        const currentLotSizing = (locConfig.currentLotSizing || '').toString().toUpperCase().replace(/ /g, '_');
+                        const currentLeadTime = parseInt(locConfig.currentLeadTime) || 0;
+
+                        // Compare normalized values
+                        const supplyTypeMatches = currentSupplyType === expectedSupplyType;
+                        const lotSizingMatches = currentLotSizing === expectedLotSizing;
+                        const leadTimeMatches = currentLeadTime === expectedLeadTime;
+
+                        const needsUpdate = !supplyTypeMatches || !lotSizingMatches || !leadTimeMatches;
 
                         if (!needsUpdate) {
                             log.debug('Location MRP Already Configured', 'Item: ' + itemId + ', Location: ' + locConfig.locationId);
                             return;
                         }
+
+                        // Log what's different for debugging
+                        log.debug('Location MRP Needs Update',
+                            'Item: ' + itemId + ', Location: ' + locConfig.locationId +
+                            ', SupplyType: ' + currentSupplyType + ' -> ' + expectedSupplyType + ' (' + supplyTypeMatches + ')' +
+                            ', LotSizing: ' + currentLotSizing + ' -> ' + expectedLotSizing + ' (' + lotSizingMatches + ')' +
+                            ', LeadTime: ' + currentLeadTime + ' -> ' + expectedLeadTime + ' (' + leadTimeMatches + ')');
 
                         const configRec = record.load({
                             type: 'itemlocationconfiguration',

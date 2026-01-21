@@ -395,11 +395,16 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         function map(context) {
             try {
                 const rowData = JSON.parse(context.value);
+                const itemId = rowData.itemFields.itemid || ('row_' + rowData.rowNumber);
 
+                // Group by structural role (isAssembly), not by recordType
+                // This keeps the map/reduce flow stable when we add lot/serialized item support
+                // '1_comp_' = components (inventory-type items) - must process first
+                // '2_assy_' = assemblies - process second so BOM components exist
                 if (rowData.isAssembly) {
-                    context.write('2_assembly', context.value);
+                    context.write('2_assy_' + itemId, context.value);
                 } else {
-                    context.write('1_inventory', context.value);
+                    context.write('1_comp_' + itemId, context.value);
                 }
 
             } catch (e) {
@@ -409,15 +414,28 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
 
         /**
          * REDUCE - Create items and ensure locations exist
+         * Each item gets its own reduce invocation via unique keys for better governance distribution
          */
         function reduce(context) {
             try {
-                const stage = context.key;
+                const key = context.key;
                 const records = context.values.map(v => JSON.parse(v));
 
-                log.audit('========================================', '');
-                log.audit('REDUCE - ' + stage, 'Processing ' + records.length + ' records');
-                log.audit('========================================', '');
+                // Determine stage from key prefix
+                // Based on structural role (component vs assembly), not record type
+                let stage;
+                if (key.startsWith('1_comp_')) {
+                    stage = 'component';
+                } else if (key.startsWith('2_assy_')) {
+                    stage = 'assembly';
+                } else {
+                    log.error('Unknown Key', 'Unexpected reduce key: ' + key);
+                    return;
+                }
+
+                // With unique keys, we typically get 1 record per reduce call
+                // But handle multiple just in case
+                log.debug('REDUCE', 'Key: ' + key + ', Stage: ' + stage + ', Records: ' + records.length);
 
                 let created = 0;
                 let skipped = 0;
@@ -473,10 +491,13 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     }
                 });
 
-                log.audit('REDUCE Complete', stage + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed + ', Locations Added: ' + locationsCreated + ', MRP Updated: ' + mrpUpdatesCount + ', Location MRP Updated: ' + locationMRPUpdated + ', Vendor Subsidiary Updated: ' + vendorSubsidiaryUpdated);
+                // Log summary for this reduce invocation
+                if (created > 0 || skipped > 0 || failed > 0) {
+                    log.debug('REDUCE Complete', key + ' - Created: ' + created + ', Skipped: ' + skipped + ', Failed: ' + failed);
+                }
 
             } catch (e) {
-                log.error('reduce Error', 'Stage: ' + context.key + ', Error: ' + e.toString() + '\n' + e.stack);
+                log.error('reduce Error', 'Key: ' + context.key + ', Error: ' + e.toString() + '\n' + e.stack);
             }
         }
 

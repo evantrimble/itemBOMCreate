@@ -37,6 +37,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             createVendors: false,
             unitsTypeId: 1,  // Default: Each
             defaultBomSource: 'STOCK',
+            setMOQ: false,
+            moqPercent: 15,
+            moqValues: [10, 25, 50, 100],
             itemLocationDefaults: {
                 preferredstocklevel: 1000,
                 reorderpoint: 600,
@@ -106,6 +109,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 DEFAULTS.createVendors = DEFAULTS.createVendors !== undefined ? DEFAULTS.createVendors : DEFAULT_CONFIG.createVendors;
                 DEFAULTS.unitsTypeId = DEFAULTS.unitsTypeId !== undefined ? DEFAULTS.unitsTypeId : DEFAULT_CONFIG.unitsTypeId;
                 DEFAULTS.defaultBomSource = DEFAULTS.defaultBomSource || DEFAULT_CONFIG.defaultBomSource;
+                DEFAULTS.setMOQ = DEFAULTS.setMOQ !== undefined ? DEFAULTS.setMOQ : DEFAULT_CONFIG.setMOQ;
+                DEFAULTS.moqPercent = DEFAULTS.moqPercent || DEFAULT_CONFIG.moqPercent;
+                DEFAULTS.moqValues = DEFAULTS.moqValues || DEFAULT_CONFIG.moqValues;
                 DEFAULTS.itemLocationDefaults = DEFAULTS.itemLocationDefaults || DEFAULT_CONFIG.itemLocationDefaults;
 
                 log.audit('Defaults Applied', JSON.stringify(DEFAULTS));
@@ -735,6 +741,19 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     itemLocConfigRec.setValue({ fieldId: 'reorderpoint', value: locDefaults.reorderpoint || 600 });
                     itemLocConfigRec.setValue({ fieldId: 'safetystocklevel', value: locDefaults.safetystocklevel || 100 });
 
+                    // ========== MOQ SETTINGS ==========
+                    // Set MOQ on a percentage of inventory items (not assemblies)
+                    if (defaults.setMOQ && !isAssembly && defaults.moqValues && defaults.moqValues.length > 0) {
+                        const moqPercent = defaults.moqPercent || 15;
+                        // Every Nth item gets MOQ, where N = 100/percent (roughly)
+                        const moqInterval = Math.ceil(100 / moqPercent);
+                        if (rotationIndex % moqInterval === 0) {
+                            const moqValue = defaults.moqValues[rotationIndex % defaults.moqValues.length];
+                            itemLocConfigRec.setValue({ fieldId: 'minimumorderquantity', value: moqValue });
+                            log.debug('MOQ Set', 'Item: ' + itemId + ', Location: ' + locationId + ', MOQ: ' + moqValue);
+                        }
+                    }
+
                     // ========== MRP SETTINGS ==========
                     if (defaults.setupMRP) {
                         // Supply Type: BUILD for assemblies, PURCHASE for inventory
@@ -790,6 +809,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         function ensureItemLocations(itemId, rowData) {
             const defaults = rowData.defaults || DEFAULT_CONFIG;
             const locationIds = defaults.locationIds || [];
+            const isAssembly = rowData.isAssembly || false;
+            const rotationIndex = rowData.mrpRotationIndex || 0;
             let locationsAdded = 0;
 
             // Get existing locations for this item
@@ -833,10 +854,23 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         fieldId: 'safetystocklevel', 
                         value: locDefaults.safetystocklevel || 100 
                     });
-                    itemLocConfigRec.setValue({ 
-                        fieldId: 'leadtime', 
-                        value: locDefaults.leadtime || 7 
+                    itemLocConfigRec.setValue({
+                        fieldId: 'leadtime',
+                        value: locDefaults.leadtime || 7
                     });
+
+                    // ========== MOQ SETTINGS ==========
+                    // Set MOQ on a percentage of inventory items (not assemblies)
+                    if (defaults.setMOQ && !isAssembly && defaults.moqValues && defaults.moqValues.length > 0) {
+                        const moqPercent = defaults.moqPercent || 15;
+                        // Every Nth item gets MOQ, where N = 100/percent (roughly)
+                        const moqInterval = Math.ceil(100 / moqPercent);
+                        if (rotationIndex % moqInterval === 0) {
+                            const moqValue = defaults.moqValues[rotationIndex % defaults.moqValues.length];
+                            itemLocConfigRec.setValue({ fieldId: 'minimumorderquantity', value: moqValue });
+                            log.debug('MOQ Set on Existing Item', 'Item: ' + itemId + ', Location: ' + locationId + ', MOQ: ' + moqValue);
+                        }
+                    }
 
                     const configId = itemLocConfigRec.save();
 

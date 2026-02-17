@@ -328,6 +328,34 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             bomSourceField.addSelectOption({ value: 'PURCHASE_ORDER', text: 'Purchase Order' });
             bomSourceField.setHelpText({ help: 'Default item source for BOM components. Can be overridden per-item if BOM Item Source column is mapped.' });
 
+            // MOQ Section
+            const moqCheckbox = form.addField({
+                id: 'custpage_set_moq',
+                type: serverWidget.FieldType.CHECKBOX,
+                label: 'Set MOQ on Some Items',
+                container: 'custpage_defaults_group'
+            });
+            moqCheckbox.defaultValue = 'F';
+            moqCheckbox.setHelpText({ help: 'When checked: Sets Minimum Order Quantity on a percentage of inventory items for demo variety.' });
+
+            const moqPercentField = form.addField({
+                id: 'custpage_moq_percent',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'MOQ Percentage of Items',
+                container: 'custpage_defaults_group'
+            });
+            moqPercentField.defaultValue = 15;
+            moqPercentField.setHelpText({ help: 'Percentage of inventory items that will have MOQ set (0-100)' });
+
+            const moqValuesField = form.addField({
+                id: 'custpage_moq_values',
+                type: serverWidget.FieldType.TEXT,
+                label: 'MOQ Values (comma-separated)',
+                container: 'custpage_defaults_group'
+            });
+            moqValuesField.defaultValue = '10,25,50,100';
+            moqValuesField.setHelpText({ help: 'MOQ values to rotate through for selected items' });
+
             // Item Location Defaults Group (shown when MRP is unchecked)
             form.addFieldGroup({
                 id: 'custpage_loc_defaults_group',
@@ -524,6 +552,11 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
 
             const setupMRP = params.custpage_setup_mrp === 'T';
             const createVendors = params.custpage_create_vendors === 'T';
+            const setMOQ = params.custpage_set_moq === 'T';
+
+            // Parse MOQ values
+            const moqValuesStr = params.custpage_moq_values || '10,25,50,100';
+            const moqValues = moqValuesStr.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v) && v > 0);
 
             const defaults = {
                 setupMRP: setupMRP,
@@ -536,6 +569,9 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 locationIds: locationIds,
                 unitsTypeId: parseInt(params.custpage_units_type) || 1,
                 defaultBomSource: params.custpage_bom_source || 'STOCK',
+                setMOQ: setMOQ,
+                moqPercent: parseInt(params.custpage_moq_percent) || 15,
+                moqValues: moqValues,
                 itemLocationDefaults: {
                     preferredstocklevel: parseInt(params.custpage_pref_stock) || 1000,
                     reorderpoint: parseInt(params.custpage_reorder_point) || 600,

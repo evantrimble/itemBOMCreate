@@ -31,6 +31,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             { value: 'vendor', text: 'Vendor Name (for Create Vendors option)' },
             { value: 'vendorpartnumber', text: 'Vendor Part Number' },
             { value: 'quantity', text: 'BOM Quantity' },
+            { value: 'unitstype', text: 'Units Type (Internal ID)' },
             { value: 'revision', text: 'Item Revision' },
             { value: 'custitem_pkg_info', text: 'Package Info (Custom)' },
             { value: 'custitem_part_requirement', text: 'Part Requirement (Custom)' },
@@ -303,6 +304,16 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             locationsField.defaultValue = '2,13';
             locationsField.setHelpText({ help: 'Internal IDs of locations to configure for each item' });
 
+            // Default Units Type
+            const unitsTypeField = form.addField({
+                id: 'custpage_units_type',
+                type: serverWidget.FieldType.INTEGER,
+                label: 'Default Units Type ID',
+                container: 'custpage_defaults_group'
+            });
+            unitsTypeField.defaultValue = 1;
+            unitsTypeField.setHelpText({ help: 'Internal ID of the Units Type to apply to items (0 = none). Find IDs at Setup > Accounting > Units Of Measure.' });
+
             // Item Location Defaults Group (shown when MRP is unchecked)
             form.addFieldGroup({
                 id: 'custpage_loc_defaults_group',
@@ -506,8 +517,10 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 taxScheduleId: parseInt(params.custpage_tax_schedule) || 1,
                 vendorId: parseInt(params.custpage_vendor_id) || 0,
                 vendorSubsidiaryId: parseInt(params.custpage_vendor_subsidiary) || 2,
+                subsidiaryId: parseInt(params.custpage_vendor_subsidiary) || 2,
                 purchasePrice: parseFloat(params.custpage_purchase_price) || 1,
                 locationIds: locationIds,
+                unitsTypeId: parseInt(params.custpage_units_type) || 1,
                 itemLocationDefaults: {
                     preferredstocklevel: parseInt(params.custpage_pref_stock) || 1000,
                     reorderpoint: parseInt(params.custpage_reorder_point) || 600,

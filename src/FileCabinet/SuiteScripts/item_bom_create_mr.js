@@ -35,6 +35,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             taxScheduleId: 1,
             setupMRP: true,
             createVendors: false,
+            unitsTypeId: 1,  // Default: Each
             itemLocationDefaults: {
                 preferredstocklevel: 1000,
                 reorderpoint: 600,
@@ -102,6 +103,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 DEFAULTS.taxScheduleId = DEFAULTS.taxScheduleId || DEFAULT_CONFIG.taxScheduleId;
                 DEFAULTS.setupMRP = DEFAULTS.setupMRP !== undefined ? DEFAULTS.setupMRP : DEFAULT_CONFIG.setupMRP;
                 DEFAULTS.createVendors = DEFAULTS.createVendors !== undefined ? DEFAULTS.createVendors : DEFAULT_CONFIG.createVendors;
+                DEFAULTS.unitsTypeId = DEFAULTS.unitsTypeId !== undefined ? DEFAULTS.unitsTypeId : DEFAULT_CONFIG.unitsTypeId;
                 DEFAULTS.itemLocationDefaults = DEFAULTS.itemLocationDefaults || DEFAULT_CONFIG.itemLocationDefaults;
 
                 log.audit('Defaults Applied', JSON.stringify(DEFAULTS));
@@ -170,6 +172,12 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             mapped.bomFields.memo = value.trim();
                         } else if (fieldName === 'vendor') {
                             mapped.vendorName = value.trim();
+                        } else if (fieldName === 'unitstype') {
+                            // Units Type - store as integer internal ID
+                            const unitsTypeId = parseInt(value.trim());
+                            if (!isNaN(unitsTypeId) && unitsTypeId > 0) {
+                                mapped.itemFields.unitstype = unitsTypeId;
+                            }
                         } else if (fieldName === 'displayname') {
                             // Map to all three description fields
                             mapped.itemFields.displayname = value.trim();
@@ -572,11 +580,14 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             itemRec.setValue({ fieldId: 'includechildren', value: true });
             itemRec.setValue({ fieldId: 'taxschedule', value: defaults.taxScheduleId });
             
-            // Units Type = Each (ID: 1)
-            try {
-                itemRec.setValue({ fieldId: 'unitstype', value: 1 });
-            } catch (e) {
-                log.debug('Units Type Warning', e.toString());
+            // Units Type - use item-level if mapped, otherwise default from config, otherwise 1 (Each)
+            if (!rowData.itemFields.unitstype) {
+                try {
+                    const unitsTypeId = defaults.unitsTypeId > 0 ? defaults.unitsTypeId : 1;
+                    itemRec.setValue({ fieldId: 'unitstype', value: unitsTypeId });
+                } catch (e) {
+                    log.debug('Units Type Warning', e.toString());
+                }
             }
 
             // Weight = 1

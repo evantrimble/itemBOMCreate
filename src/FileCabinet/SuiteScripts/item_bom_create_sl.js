@@ -430,7 +430,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             
             const h = header.toLowerCase().trim();
 
-            if (h.includes('hierarchy') || h.includes('bom structure') || h.includes('level')) {
+            if (h.includes('hierarchy') || h.includes('bom structure')) {
                 return 'hierarchy';
             }
             if (h.includes('part number') || h.includes('part #') || h.includes('itemid') || h === 'part' || h === 'item') {

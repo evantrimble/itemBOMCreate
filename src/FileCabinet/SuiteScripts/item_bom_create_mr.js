@@ -116,7 +116,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 // If Create Vendors is enabled, pre-create vendors from CSV
                 let vendorCache = {};
                 if (DEFAULTS.createVendors) {
-                    vendorCache = createVendorsFromCSV(config.csvFileId, config.mappings, DEFAULTS);
+                    vendorCache = createVendorsFromCSV(config.csvFileId, config.mappings, DEFAULTS, config.prospectName);
                     log.audit('Vendors Created', JSON.stringify(vendorCache));
                 }
 
@@ -287,9 +287,22 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         }
 
         /**
+         * Sanitize string for use in external ID
+         * Ensures the result fits within NetSuite's 255 character limit
+         */
+        function sanitizeForExternalId(str) {
+            if (!str) return '';
+            return str
+                .replace(/[^a-zA-Z0-9_-]/g, '_')  // Replace special chars with underscore
+                .replace(/_+/g, '_')              // Collapse multiple underscores
+                .replace(/^_|_$/g, '')            // Trim leading/trailing underscores
+                .substring(0, 200);               // Truncate to leave room for prefix
+        }
+
+        /**
          * Create vendors from CSV data
          */
-        function createVendorsFromCSV(csvFileId, mappings, defaults) {
+        function createVendorsFromCSV(csvFileId, mappings, defaults, prospectName) {
             const vendorCache = {};
 
             try {
@@ -342,9 +355,14 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             vendorRec.setValue({ fieldId: 'companyname', value: vendorName });
                             vendorRec.setValue({ fieldId: 'subsidiary', value: defaults.vendorSubsidiaryId || DEFAULT_CONFIG.subsidiaryId });
 
+                            // Set external ID for easy filtering
+                            const sanitizedName = sanitizeForExternalId(vendorName);
+                            const externalId = prospectName + '_vendor_' + sanitizedName;
+                            vendorRec.setValue({ fieldId: 'externalid', value: externalId });
+
                             const vendorId = vendorRec.save();
                             vendorCache[vendorName] = vendorId;
-                            log.audit('Vendor Created', vendorName + ' (ID: ' + vendorId + ')');
+                            log.audit('Vendor Created', vendorName + ' (ID: ' + vendorId + ', ExtID: ' + externalId + ')');
                         }
                     } catch (e) {
                         log.error('Vendor Creation Error', vendorName + ': ' + e.toString());

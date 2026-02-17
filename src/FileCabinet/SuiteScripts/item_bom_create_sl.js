@@ -31,6 +31,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             { value: 'vendor', text: 'Vendor Name (for Create Vendors option)' },
             { value: 'vendorpartnumber', text: 'Vendor Part Number' },
             { value: 'quantity', text: 'BOM Quantity' },
+            { value: 'bomSource', text: 'BOM Item Source (STOCK, PHANTOM, WORK_ORDER, PURCHASE_ORDER)' },
             { value: 'unitstype', text: 'Units Type (Internal ID)' },
             { value: 'revision', text: 'Item Revision' },
             { value: 'custitem_pkg_info', text: 'Package Info (Custom)' },
@@ -314,6 +315,19 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             unitsTypeField.defaultValue = 1;
             unitsTypeField.setHelpText({ help: 'Internal ID of the Units Type to apply to items (0 = none). Find IDs at Setup > Accounting > Units Of Measure.' });
 
+            // Default BOM Source
+            const bomSourceField = form.addField({
+                id: 'custpage_bom_source',
+                type: serverWidget.FieldType.SELECT,
+                label: 'Default BOM Item Source',
+                container: 'custpage_defaults_group'
+            });
+            bomSourceField.addSelectOption({ value: 'STOCK', text: 'Stock', isSelected: true });
+            bomSourceField.addSelectOption({ value: 'PHANTOM', text: 'Phantom' });
+            bomSourceField.addSelectOption({ value: 'WORK_ORDER', text: 'Work Order' });
+            bomSourceField.addSelectOption({ value: 'PURCHASE_ORDER', text: 'Purchase Order' });
+            bomSourceField.setHelpText({ help: 'Default item source for BOM components. Can be overridden per-item if BOM Item Source column is mapped.' });
+
             // Item Location Defaults Group (shown when MRP is unchecked)
             form.addFieldGroup({
                 id: 'custpage_loc_defaults_group',
@@ -521,6 +535,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 purchasePrice: parseFloat(params.custpage_purchase_price) || 1,
                 locationIds: locationIds,
                 unitsTypeId: parseInt(params.custpage_units_type) || 1,
+                defaultBomSource: params.custpage_bom_source || 'STOCK',
                 itemLocationDefaults: {
                     preferredstocklevel: parseInt(params.custpage_pref_stock) || 1000,
                     reorderpoint: parseInt(params.custpage_reorder_point) || 600,

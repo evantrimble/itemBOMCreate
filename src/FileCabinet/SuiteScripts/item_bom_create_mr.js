@@ -36,6 +36,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             setupMRP: true,
             createVendors: false,
             unitsTypeId: 1,  // Default: Each
+            defaultBomSource: 'STOCK',
             itemLocationDefaults: {
                 preferredstocklevel: 1000,
                 reorderpoint: 600,
@@ -104,6 +105,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 DEFAULTS.setupMRP = DEFAULTS.setupMRP !== undefined ? DEFAULTS.setupMRP : DEFAULT_CONFIG.setupMRP;
                 DEFAULTS.createVendors = DEFAULTS.createVendors !== undefined ? DEFAULTS.createVendors : DEFAULT_CONFIG.createVendors;
                 DEFAULTS.unitsTypeId = DEFAULTS.unitsTypeId !== undefined ? DEFAULTS.unitsTypeId : DEFAULT_CONFIG.unitsTypeId;
+                DEFAULTS.defaultBomSource = DEFAULTS.defaultBomSource || DEFAULT_CONFIG.defaultBomSource;
                 DEFAULTS.itemLocationDefaults = DEFAULTS.itemLocationDefaults || DEFAULT_CONFIG.itemLocationDefaults;
 
                 log.audit('Defaults Applied', JSON.stringify(DEFAULTS));
@@ -170,6 +172,12 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             mapped.bomFields.quantity = parseFloat(value) || 1;
                         } else if (fieldName === 'memo') {
                             mapped.bomFields.memo = value.trim();
+                        } else if (fieldName === 'bomSource') {
+                            // BOM Item Source - validate and store
+                            const upperVal = value.trim().toUpperCase();
+                            if (['STOCK', 'PHANTOM', 'WORK_ORDER', 'PURCHASE_ORDER'].includes(upperVal)) {
+                                mapped.bomFields.itemSource = upperVal;
+                            }
                         } else if (fieldName === 'vendor') {
                             mapped.vendorName = value.trim();
                         } else if (fieldName === 'unitstype') {
@@ -1206,7 +1214,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                                 components.push({
                                     itemId: child.itemFields.itemid,
                                     internalId: childInternalId,
-                                    quantity: child.bomFields.quantity || 1
+                                    quantity: child.bomFields.quantity || 1,
+                                    itemSource: child.bomFields.itemSource || null  // Item-level BOM source
                                 });
                             } else {
                                 log.error('Component Not Found', 'Component ' + child.itemFields.itemid + ' not found');
@@ -1230,7 +1239,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             }
 
                             // Create or get BOM Revision
-                            const revisionResult = createOrGetBOMRevision(bomResult.bomId, assemblyItemId, components, prospectName);
+                            const revisionResult = createOrGetBOMRevision(bomResult.bomId, assemblyItemId, components, prospectName, defaults);
                             
                             if (revisionResult.created) {
                                 revisionsCreated++;
@@ -1340,7 +1349,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         /**
          * Create or get existing BOM Revision with components
          */
-        function createOrGetBOMRevision(bomId, assemblyItemId, components, prospectName) {
+        function createOrGetBOMRevision(bomId, assemblyItemId, components, prospectName, defaults) {
             try {
                 const revisionName = assemblyItemId + '_REV_A';
                 const externalId = prospectName + '_' + revisionName;
@@ -1351,6 +1360,9 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     log.debug('BOM Revision Exists', 'Revision: ' + revisionName + ' (ID: ' + existingRevision + ')');
                     return { revisionId: existingRevision, created: false, exists: true };
                 }
+
+                // Get default BOM source from config
+                const defaultBomSource = (defaults && defaults.defaultBomSource) ? defaults.defaultBomSource : 'STOCK';
 
                 const yesterday = new Date();
                 yesterday.setDate(yesterday.getDate() - 1);
@@ -1381,8 +1393,19 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             fieldId: 'bomquantity',
                             value: component.quantity
                         });
+
+                        // Set item source - use component-level if specified, otherwise default
+                        const itemSource = component.itemSource || defaultBomSource;
+                        bomRevRec.setCurrentSublistValue({
+                            sublistId: 'component',
+                            fieldId: 'itemsource',
+                            value: itemSource
+                        });
+
                         bomRevRec.commitLine({ sublistId: 'component' });
                         componentsAdded++;
+
+                        log.debug('Component Added', 'Item: ' + component.itemId + ', Qty: ' + component.quantity + ', Source: ' + itemSource);
                     } catch (e) {
                         log.error('Component Add Failed', 'Component: ' + component.itemId + ', Error: ' + e.toString());
                     }

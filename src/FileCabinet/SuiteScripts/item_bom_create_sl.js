@@ -37,8 +37,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             { value: 'islotitem', text: 'Lot Tracked (Y/N)' },
             { value: 'isserialitem', text: 'Serial Tracked (Y/N)' },
             { value: 'revision', text: 'Item Revision' },
-            { value: 'custitem_pkg_info', text: 'Package Info (Custom)' },
-            { value: 'custitem_part_requirement', text: 'Part Requirement (Custom)' },
+            { value: '_custom_', text: '-- Custom Field (enter ID) --' },
             { value: 'memo', text: 'Comments / Memo' }
         ];
 
@@ -437,6 +436,15 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 if (autoMap) {
                     selectField.defaultValue = autoMap;
                 }
+
+                // Add companion text input for custom field ID
+                const customFieldId = form.addField({
+                    id: 'custpage_custom_field_' + index,
+                    type: serverWidget.FieldType.TEXT,
+                    label: '↳ Custom Field ID for: ' + (header || ('Column ' + (index + 1))),
+                    container: 'custpage_mapping_group'
+                });
+                customFieldId.setHelpText({ help: 'Enter the field ID (e.g., custitem_my_field). Only used when "Custom Field" is selected above.' });
             });
 
             // Preview Section
@@ -554,7 +562,18 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             let hasItemId = false;
 
             for (let i = 0; i < columnCount; i++) {
-                const mapValue = params['custpage_map_col_' + i];
+                let mapValue = params['custpage_map_col_' + i];
+
+                // If custom field selected, use the custom field ID instead
+                if (mapValue === '_custom_') {
+                    const customId = params['custpage_custom_field_' + i];
+                    if (customId && customId.trim()) {
+                        mapValue = customId.trim();
+                    } else {
+                        mapValue = ''; // Skip if no custom ID provided
+                    }
+                }
+
                 if (mapValue) {
                     mappings[i] = mapValue;
                     if (mapValue === 'hierarchy') hasHierarchy = true;

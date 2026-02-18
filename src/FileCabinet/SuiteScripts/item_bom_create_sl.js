@@ -246,6 +246,18 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             mrpCheckbox.defaultValue = 'T';
             mrpCheckbox.setHelpText({ help: 'When checked: Assembly items use Master Production Scheduling, Inventory items use Material Requirements Planning. Creates Planning Item Category using Prospect Name. Configures varied lead times and lot sizing for demo.' });
 
+            // Skip MRP Updates Checkbox (for re-runs)
+            const skipMrpCheckbox = form.addField({
+                id: 'custpage_skip_mrp_updates',
+                type: serverWidget.FieldType.CHECKBOX,
+                label: 'Skip MRP Updates for Existing Items',
+                container: 'custpage_defaults_group'
+            });
+            skipMrpCheckbox.defaultValue = 'F';
+            skipMrpCheckbox.setHelpText({
+                help: 'For re-runs only. When checked: Existing items will not have MRP settings checked or updated, saving governance units. New items still get full MRP setup. Use this to quickly complete partial imports.'
+            });
+
             // Create Vendors Checkbox
             const createVendorsCheckbox = form.addField({
                 id: 'custpage_create_vendors',
@@ -552,6 +564,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
 
             const setupMRP = params.custpage_setup_mrp === 'T';
             const createVendors = params.custpage_create_vendors === 'T';
+            const skipMRPUpdates = params.custpage_skip_mrp_updates === 'T';
             const setMOQ = params.custpage_set_moq === 'T';
 
             // Parse MOQ values
@@ -561,6 +574,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             const defaults = {
                 setupMRP: setupMRP,
                 createVendors: createVendors,
+                skipMRPUpdates: skipMRPUpdates,
                 taxScheduleId: parseInt(params.custpage_tax_schedule) || 1,
                 vendorId: parseInt(params.custpage_vendor_id) || 0,
                 vendorSubsidiaryId: parseInt(params.custpage_vendor_subsidiary) || 2,

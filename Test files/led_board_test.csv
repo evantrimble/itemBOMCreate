@@ -1,0 +1,14 @@
+Hierarchy,Part Number,Quantity,Description,Pkg Info,MPN,Part Requirement,Vendor
+1,PCB,1,2 sided PCB,,LED BOARD REV 1.1,,
+1.1,Capacitor 0.1uF,12,25V 10%,0805,CC0805KRX7R8BB104,Any equivalent part,Mouser
+1.2,Capacitor 10uF,2,25V 10%,1206,C1206C106K3PACTU,Any equivalent part,Mouser
+1.3,Diode,1,,1206,SD1206S040S2R0,Any similar part,Mouser
+1.4,Program Header,0,6 pin,2.54mm,M20-9980346,Do not place,Mouser
+1.5,4P 90 Header,2,4 Pin 90 Shrouded,2.54mm,76382-404LF,Exact part,Mouser
+1.6,Resistor 120,1,120 1/8W,0805,RC0805FR-07120RL,Any equivalent part,Mouser
+1.7,Resistor 1k,4,1K 1/8W 1%,0805,RC0805FR-071KL,Any equivalent part,Mouser
+1.8,Resistor 10K,1,10K,0805,RC0805FR-0710KL,Any equivalent part,Mouser
+1.9,Resistor 4.7K,1,4.7K 1/8W,0805,RC0805FR-074K7L,Any equivalent part,Mouser
+1.10,LED RED,1,Red LED,0805,SML-LX0805SRC-TR,Exact Color,Mouser
+1.11,LED YELLOW,1,Yellow LED,0805,SML-LX0805YC-TR,Exact Color,Mouser
+1.12,LED GREEN,1,Green LED,0805,SML-LX0805GC-TR,Exact Color,Mouser

@@ -35,6 +35,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             taxScheduleId: 1,
             setupMRP: true,
             createVendors: false,
+            skipMRPUpdates: false,
             unitsTypeId: 1,  // Default: Each
             defaultBomSource: 'STOCK',
             setMOQ: false,
@@ -128,6 +129,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                 DEFAULTS.taxScheduleId = DEFAULTS.taxScheduleId || DEFAULT_CONFIG.taxScheduleId;
                 DEFAULTS.setupMRP = DEFAULTS.setupMRP !== undefined ? DEFAULTS.setupMRP : DEFAULT_CONFIG.setupMRP;
                 DEFAULTS.createVendors = DEFAULTS.createVendors !== undefined ? DEFAULTS.createVendors : DEFAULT_CONFIG.createVendors;
+                DEFAULTS.skipMRPUpdates = DEFAULTS.skipMRPUpdates !== undefined ? DEFAULTS.skipMRPUpdates : DEFAULT_CONFIG.skipMRPUpdates;
                 DEFAULTS.unitsTypeId = DEFAULTS.unitsTypeId !== undefined ? DEFAULTS.unitsTypeId : DEFAULT_CONFIG.unitsTypeId;
                 DEFAULTS.defaultBomSource = DEFAULTS.defaultBomSource || DEFAULT_CONFIG.defaultBomSource;
                 DEFAULTS.setMOQ = DEFAULTS.setMOQ !== undefined ? DEFAULTS.setMOQ : DEFAULT_CONFIG.setMOQ;
@@ -517,18 +519,25 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             log.debug('Item Exists', 'Item: ' + rowData.itemFields.itemid + ' (ID: ' + existingItemId + ')');
                             skipped++;
 
+                            const defaults = rowData.defaults || DEFAULT_CONFIG;
+
                             // IDEMPOTENT: Check and create missing locations for existing item
                             const locsAdded = ensureItemLocations(existingItemId, rowData);
                             locationsCreated += locsAdded;
 
-                            // IDEMPOTENT: Check and update MRP settings on existing item
-                            const mrpUpdated = ensureMRPSettings(existingItemId, rowData);
-                            if (mrpUpdated) {
-                                mrpUpdatesCount++;
-                            }
+                            // Skip MRP updates if option is enabled (for faster re-runs)
+                            if (!defaults.skipMRPUpdates) {
+                                // IDEMPOTENT: Check and update MRP settings on existing item
+                                const mrpUpdated = ensureMRPSettings(existingItemId, rowData);
+                                if (mrpUpdated) {
+                                    mrpUpdatesCount++;
+                                }
 
-                            // IDEMPOTENT: Check and update MRP settings on existing item locations
-                            locationMRPUpdated += ensureLocationMRPSettings(existingItemId, rowData);
+                                // IDEMPOTENT: Check and update MRP settings on existing item locations
+                                locationMRPUpdated += ensureLocationMRPSettings(existingItemId, rowData);
+                            } else {
+                                log.debug('MRP Updates Skipped', 'Item: ' + rowData.itemFields.itemid + ' (skipMRPUpdates enabled)');
+                            }
 
                             // IDEMPOTENT: Check and update vendor subsidiary on existing item
                             if (ensureVendorSubsidiary(existingItemId, rowData.recordType, rowData)) {

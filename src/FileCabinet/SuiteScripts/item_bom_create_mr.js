@@ -5,15 +5,16 @@
  */
 
 /**
- * BOM Import Map/Reduce Script v3.1 - Lead Time Fix
- * 
- * Purpose: Import items, BOMs, and BOM revisions from CSV file using hierarchy notation
- * 
+ * BOM Import Map/Reduce Script v3.2 - JSON Support
+ *
+ * Purpose: Import items, BOMs, and BOM revisions from CSV or JSON file using hierarchy notation
+ *
  * Features:
+ * - CSV and JSON file format support (auto-detected)
  * - Hierarchy-based BOM structure (1.0, 1.1, 1.1.1 notation)
  * - Automatic type detection (assembly vs. inventory based on hierarchy)
  * - MRP setup with Planning Item Category, varied lead times, lot sizing
- * - Optional vendor creation from CSV
+ * - Optional vendor creation from file data
  * - Duplicate handling (items created once, linked to multiple BOMs)
  * - IDEMPOTENT: Re-runnable to complete partial imports
  *   - Checks/creates locations on existing items
@@ -153,31 +154,45 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     log.audit('Vendors Created', JSON.stringify(vendorCache));
                 }
 
-                // Load CSV file
-                const csvFile = file.load({ id: config.csvFileId });
-                const csvContent = csvFile.getContents();
-                const lines = csvContent.split('\n').filter(line => line.trim());
+                // Load file (CSV or JSON)
+                const dataFile = file.load({ id: config.csvFileId });
+                const fileContent = dataFile.getContents().trim();
 
-                if (lines.length < 2) {
-                    throw new Error('CSV must have at least a header row and one data row');
-                }
+                // Auto-detect JSON vs CSV based on first character
+                const isJSON = fileContent.startsWith('{') || fileContent.startsWith('[');
 
-                // Parse headers (first row)
-                const headers = parseRow(lines[0]);
+                let headers, allRows;
 
-                // Parse data rows
-                const allRows = [];
-                for (let i = 1; i < lines.length; i++) {
-                    const rowData = parseRow(lines[i]);
-                    if (rowData.some(cell => cell.trim())) {
-                        allRows.push({
-                            rowNumber: i + 1,
-                            cells: rowData
-                        });
+                if (isJSON) {
+                    log.audit('File Type', 'JSON detected');
+                    const jsonResult = parseJSONInput(fileContent);
+                    headers = jsonResult.headers;
+                    allRows = jsonResult.rows;
+                } else {
+                    log.audit('File Type', 'CSV detected');
+                    const lines = fileContent.split('\n').filter(line => line.trim());
+
+                    if (lines.length < 2) {
+                        throw new Error('CSV must have at least a header row and one data row');
+                    }
+
+                    // Parse headers (first row)
+                    headers = parseRow(lines[0]);
+
+                    // Parse data rows
+                    allRows = [];
+                    for (let i = 1; i < lines.length; i++) {
+                        const rowData = parseRow(lines[i]);
+                        if (rowData.some(cell => cell.trim())) {
+                            allRows.push({
+                                rowNumber: i + 1,
+                                cells: rowData
+                            });
+                        }
                     }
                 }
 
-                log.audit('CSV Parsed', 'Headers: ' + headers.length + ', Data Rows: ' + allRows.length);
+                log.audit('File Parsed', 'Headers: ' + headers.length + ', Data Rows: ' + allRows.length);
 
                 // Map rows to fields using config
                 const mappedRows = allRows.map(row => {
@@ -425,6 +440,51 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             }
 
             return vendorCache;
+        }
+
+        /**
+         * Parse JSON file content into the same row structure as CSV parsing.
+         * Mirrors the Suitelet's parseJSONFile() logic.
+         * @param {string} content - JSON file content
+         * @returns {Object} { headers: [], rows: [] } where rows are { rowNumber, cells }
+         */
+        function parseJSONInput(content) {
+            let json;
+            try {
+                json = JSON.parse(content);
+            } catch (e) {
+                throw new Error('Invalid JSON format: ' + e.message);
+            }
+
+            const items = Array.isArray(json) ? json : (json.items || []);
+
+            if (items.length === 0) {
+                throw new Error('No items found in JSON file');
+            }
+
+            // Collect all unique field names, skip keys starting with "_" (internal/meta fields)
+            const fieldSet = new Set();
+            items.forEach(function(item) {
+                Object.keys(item).forEach(function(key) {
+                    if (!key.startsWith('_')) {
+                        fieldSet.add(key);
+                    }
+                });
+            });
+            const headers = Array.from(fieldSet);
+
+            // Convert items to row arrays (same structure as CSV parsing)
+            const rows = items.map(function(item, index) {
+                const cells = headers.map(function(header) {
+                    const value = item[header];
+                    if (value === null || value === undefined) return '';
+                    if (typeof value === 'boolean') return value ? 'Y' : 'N';
+                    return String(value);
+                });
+                return { rowNumber: index + 2, cells: cells };  // +2 to match CSV row numbering (1-indexed, skip header)
+            });
+
+            return { headers: headers, rows: rows };
         }
 
         /**
@@ -1279,8 +1339,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     allRows = JSON.parse(rowsStr);
                     log.audit('Rows from Cache', allRows.length + ' rows');
                 } catch (e) {
-                    log.audit('Cache Miss', 'Re-parsing CSV file');
-                    allRows = reParseCSVForSummarize(config);
+                    log.audit('Cache Miss', 'Re-parsing file');
+                    allRows = reParseFileForSummarize(config);
                 }
 
                 // Find all assemblies
@@ -1642,21 +1702,29 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         }
 
         /**
-         * Re-parse CSV for summarize stage if cache missed
+         * Re-parse file (CSV or JSON) for summarize stage if cache missed
          */
-        function reParseCSVForSummarize(config) {
-            const csvFile = file.load({ id: config.csvFileId });
-            const csvContent = csvFile.getContents();
-            const lines = csvContent.split('\n').filter(line => line.trim());
+        function reParseFileForSummarize(config) {
+            const dataFile = file.load({ id: config.csvFileId });
+            const fileContent = dataFile.getContents().trim();
+            const isJSON = fileContent.startsWith('{') || fileContent.startsWith('[');
 
-            const allRows = [];
-            for (let i = 1; i < lines.length; i++) {
-                const rowData = parseRow(lines[i]);
-                if (rowData.some(cell => cell.trim())) {
-                    allRows.push({
-                        rowNumber: i + 1,
-                        cells: rowData
-                    });
+            let allRows;
+
+            if (isJSON) {
+                const jsonResult = parseJSONInput(fileContent);
+                allRows = jsonResult.rows;
+            } else {
+                const lines = fileContent.split('\n').filter(line => line.trim());
+                allRows = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const rowData = parseRow(lines[i]);
+                    if (rowData.some(cell => cell.trim())) {
+                        allRows.push({
+                            rowNumber: i + 1,
+                            cells: rowData
+                        });
+                    }
                 }
             }
 

@@ -68,6 +68,27 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
         };
 
         /**
+         * Normalize lot sizing method value from search results to internal enum value
+         * NetSuite search may return display text OR internal values depending on context
+         */
+        function normalizeLotSizingMethod(value) {
+            if (!value) return '';
+            const upper = value.toString().toUpperCase().replace(/ /g, '_').replace(/-/g, '_');
+
+            // Map known display-text variations to internal values
+            const LOT_SIZING_MAP = {
+                'LOT_FOR_LOT': 'LOT_FOR_LOT',
+                'FIXED_LOT_SIZE': 'FIXED_LOT_SIZE',
+                'FIXED_LOT_MULTIPLE': 'FIXED_LOT_MULTIPLE',
+                'PERIODIC_LOT_SIZE': 'PERIODIC_LOT_SIZE',
+                'PERIODS_OF_SUPPLY': 'PERIODIC_LOT_SIZE',  // Display text variant
+                'PERIOD_OF_SUPPLY': 'PERIODIC_LOT_SIZE'    // Another variant
+            };
+
+            return LOT_SIZING_MAP[upper] || upper;
+        }
+
+        /**
          * GET INPUT DATA
          */
         function getInputData() {
@@ -1005,7 +1026,7 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         // Normalize current values for comparison
                         // NetSuite search returns strings; values may be text labels or internal values
                         const currentSupplyType = (locConfig.currentSupplyType || '').toString().toUpperCase();
-                        const currentLotSizing = (locConfig.currentLotSizing || '').toString().toUpperCase().replace(/ /g, '_');
+                        const currentLotSizing = normalizeLotSizingMethod(locConfig.currentLotSizing);
                         const currentLeadTime = parseInt(locConfig.currentLeadTime) || 0;
 
                         // Compare normalized values

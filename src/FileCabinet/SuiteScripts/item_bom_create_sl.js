@@ -33,6 +33,8 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             { value: 'quantity', text: 'BOM Quantity' },
             { value: 'bomSource', text: 'BOM Item Source (STOCK, PHANTOM, WORK_ORDER, PURCHASE_ORDER)' },
             { value: 'unitstype', text: 'Units Type (Internal ID)' },
+            { value: 'islotitem', text: 'Lot Tracked (Y/N)' },
+            { value: 'isserialitem', text: 'Serial Tracked (Y/N)' },
             { value: 'revision', text: 'Item Revision' },
             { value: 'custitem_pkg_info', text: 'Package Info (Custom)' },
             { value: 'custitem_part_requirement', text: 'Part Requirement (Custom)' },
@@ -521,6 +523,12 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             }
             if (h.includes('comment') || h.includes('memo') || h.includes('note')) {
                 return 'memo';
+            }
+            if (h.includes('lot track') || h === 'lot tracked' || h === 'lot') {
+                return 'islotitem';
+            }
+            if (h.includes('serial track') || h === 'serial tracked' || h === 'serial') {
+                return 'isserialitem';
             }
 
             return null;

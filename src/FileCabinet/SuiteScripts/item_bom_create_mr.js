@@ -612,6 +612,8 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
             Object.keys(rowData.itemFields).forEach(field => {
                 try {
                     const value = rowData.itemFields[field];
+                    // Skip special fields handled separately
+                    if (field === 'islotitem' || field === 'isserialitem' || field === 'purchaseprice') return;
                     if (value) {
                         itemRec.setValue({ fieldId: field, value: value });
                     }
@@ -619,6 +621,38 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     log.debug('Field Set Warning', 'Field: ' + field + ', Error: ' + e.toString());
                 }
             });
+
+            // Handle lot/serial tracking (mutually exclusive, inventory items only)
+            if (rowData.recordType === 'inventoryitem') {
+                if (rowData.itemFields.islotitem) {
+                    const isLot = rowData.itemFields.islotitem.toString().toUpperCase();
+                    if (isLot === 'Y' || isLot === 'YES' || isLot === 'TRUE' || isLot === '1') {
+                        try {
+                            itemRec.setValue({ fieldId: 'islotitem', value: true });
+                            log.debug('Lot Tracking Enabled', rowData.itemFields.itemid);
+                        } catch (e) {
+                            log.debug('Lot Tracking Warning', rowData.itemFields.itemid + ': ' + e.toString());
+                        }
+                    }
+                }
+
+                if (rowData.itemFields.isserialitem) {
+                    const isSerial = rowData.itemFields.isserialitem.toString().toUpperCase();
+                    if (isSerial === 'Y' || isSerial === 'YES' || isSerial === 'TRUE' || isSerial === '1') {
+                        // Only set if not already lot-tracked (mutually exclusive)
+                        if (!itemRec.getValue({ fieldId: 'islotitem' })) {
+                            try {
+                                itemRec.setValue({ fieldId: 'isserialitem', value: true });
+                                log.debug('Serial Tracking Enabled', rowData.itemFields.itemid);
+                            } catch (e) {
+                                log.debug('Serial Tracking Warning', rowData.itemFields.itemid + ': ' + e.toString());
+                            }
+                        } else {
+                            log.debug('Serial/Lot Conflict', 'Item ' + rowData.itemFields.itemid + ' has both lot and serial - using lot');
+                        }
+                    }
+                }
+            }
 
             // Set standard defaults
             itemRec.setValue({ fieldId: 'includechildren', value: true });

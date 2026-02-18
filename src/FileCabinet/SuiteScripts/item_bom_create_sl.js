@@ -30,6 +30,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             { value: 'manufacturer', text: 'Manufacturer' },
             { value: 'vendor', text: 'Vendor Name (for Create Vendors option)' },
             { value: 'vendorpartnumber', text: 'Vendor Part Number' },
+            { value: 'purchaseprice', text: 'Purchase Price' },
             { value: 'quantity', text: 'BOM Quantity' },
             { value: 'bomSource', text: 'BOM Item Source (STOCK, PHANTOM, WORK_ORDER, PURCHASE_ORDER)' },
             { value: 'unitstype', text: 'Units Type (Internal ID)' },
@@ -517,6 +518,9 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             }
             if (h.includes('vendor')) {
                 return 'vendor';
+            }
+            if (h.includes('purchase price') || h.includes('unit cost') || h.includes('unit price')) {
+                return 'purchaseprice';
             }
             if (h.includes('revision') || h === 'rev') {
                 return 'revision';

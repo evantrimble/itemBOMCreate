@@ -215,6 +215,12 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                             if (!isNaN(unitsTypeId) && unitsTypeId > 0) {
                                 mapped.itemFields.unitstype = unitsTypeId;
                             }
+                        } else if (fieldName === 'purchaseprice') {
+                            // Purchase Price - parse as float, store in itemFields for use in vendor sublist
+                            const price = parseFloat(value);
+                            if (!isNaN(price) && price >= 0) {
+                                mapped.itemFields.purchaseprice = price;
+                            }
                         } else if (fieldName === 'displayname') {
                             // Map to all three description fields
                             mapped.itemFields.displayname = value.trim();
@@ -720,10 +726,14 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                         fieldId: 'preferredvendor',
                         value: true
                     });
+                    // Use mapped purchase price if available, otherwise default
+                    const purchasePrice = rowData.itemFields.purchaseprice !== undefined
+                        ? rowData.itemFields.purchaseprice
+                        : defaults.purchasePrice;
                     itemRec.setCurrentSublistValue({
                         sublistId: 'itemvendor',
                         fieldId: 'purchaseprice',
-                        value: defaults.purchasePrice
+                        value: purchasePrice
                     });
                     itemRec.setCurrentSublistValue({
                         sublistId: 'itemvendor',

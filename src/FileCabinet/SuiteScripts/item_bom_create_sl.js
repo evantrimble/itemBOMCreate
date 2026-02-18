@@ -65,29 +65,22 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 title: 'BOM Import - Step 1: Upload File'
             });
 
-            // Example JSON template for download
-            const exampleJson = [
-                {
-                    hierarchy: "1",
-                    itemid: "ASSY-001",
-                    displayname: "Main Assembly",
-                    quantity: 1,
-                    bomSource: "STOCK"
-                },
-                {
-                    hierarchy: "1.1",
-                    itemid: "PART-001",
-                    displayname: "Component Part",
-                    vendor: "Acme Supplies",
-                    vendorpartnumber: "ACM-12345",
-                    purchaseprice: 25.50,
-                    quantity: 2,
-                    islotitem: "N",
-                    isserialitem: "N"
-                }
-            ];
+            // Example JSON template for download - built server-side as data URI
+            const exampleJson = {
+                prospectName: "YourProspectName",
+                items: [
+                    { hierarchy: "1", itemid: "TOP-ASSEMBLY", displayname: "Top Level Assembly" },
+                    { hierarchy: "1.1", itemid: "SUB-ASSY-1", displayname: "Sub Assembly", bomSource: "WORK_ORDER" },
+                    { hierarchy: "1.1.1", itemid: "COMPONENT-A", displayname: "Component A", quantity: 2, vendor: "Mouser", purchaseprice: 1.50, mpn: "MFG-PART-123" },
+                    { hierarchy: "1.1.2", itemid: "COMPONENT-B", displayname: "Component B", quantity: 1, islotitem: "Y" },
+                    { hierarchy: "1.1.3", itemid: "COMPONENT-C", displayname: "Serial Tracked Part", quantity: 1, isserialitem: "Y", vendor: "Digikey", purchaseprice: 25.00 },
+                    { hierarchy: "1.2", itemid: "SIMPLE-PART", displayname: "Simple Component", quantity: 10 }
+                ]
+            };
+            const exampleJsonStr = JSON.stringify(exampleJson, null, 2);
+            const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(exampleJsonStr);
 
-            // Instructions with JSON download link
+            // Instructions with JSON download link (data URI - no client-side JS needed)
             const instructionsHtml = `
                 <div style="margin-bottom: 20px; padding: 15px; background-color: #f5f5f5; border-radius: 5px;">
                     <h3 style="margin-top: 0;">Instructions</h3>
@@ -100,7 +93,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                     </ol>
                     <p style="margin-top: 10px;">
                         <strong>JSON Option:</strong> For LLM-assisted BOM conversion,
-                        <a href="#" onclick="(function(){var d=${JSON.stringify(JSON.stringify(exampleJson, null, 2))};var b=new Blob([d],{type:'application/json'});var dlUrl=URL.createObjectURL(b);var a=document.createElement('a');a.href=dlUrl;a.download='bom_example.json';a.click();URL.revokeObjectURL(dlUrl);})();return false;">download example JSON template</a>
+                        <a href="${dataUri}" download="bom_import_example.json">download example JSON template</a>
                     </p>
                 </div>
             `;

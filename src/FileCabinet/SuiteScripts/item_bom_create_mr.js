@@ -5,7 +5,7 @@
  */
 
 /**
- * BOM Import Map/Reduce Script v3
+ * BOM Import Map/Reduce Script v3.1 - Lead Time Fix
  * 
  * Purpose: Import items, BOMs, and BOM revisions from CSV file using hierarchy notation
  * 

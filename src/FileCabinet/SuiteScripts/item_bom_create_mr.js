@@ -1024,8 +1024,18 @@ define(['N/record', 'N/search', 'N/file', 'N/runtime', 'N/cache', 'N/format'],
                     return true;
                 });
 
-                results.forEach((locConfig, locIndex) => {
+                // Build location ID array for index lookup (matches order used during creation)
+                const configLocationIds = (defaults.locationIds || []).map(id => parseInt(id));
+
+                results.forEach((locConfig) => {
                     try {
+                        // Find this location's position in the config array (matches index used during creation)
+                        const locIndex = configLocationIds.indexOf(parseInt(locConfig.locationId));
+                        if (locIndex === -1) {
+                            log.debug('Location Not In Config', 'Item: ' + itemId + ', Location: ' + locConfig.locationId + ' - skipping MRP check');
+                            return;
+                        }
+
                         const expectedSupplyType = isAssembly ? 'BUILD' : 'PURCHASE';
                         const leadTimeIndex = (rotationIndex + locIndex) % MRP_LOCATION_ROTATION.leadTimes.length;
                         const expectedLeadTime = MRP_LOCATION_ROTATION.leadTimes[leadTimeIndex];

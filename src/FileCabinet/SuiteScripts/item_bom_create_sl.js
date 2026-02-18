@@ -65,17 +65,43 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 title: 'BOM Import - Step 1: Upload File'
             });
 
-            // Instructions
+            // Example JSON template for download
+            const exampleJson = [
+                {
+                    hierarchy: "1",
+                    itemid: "ASSY-001",
+                    displayname: "Main Assembly",
+                    quantity: 1,
+                    bomSource: "STOCK"
+                },
+                {
+                    hierarchy: "1.1",
+                    itemid: "PART-001",
+                    displayname: "Component Part",
+                    vendor: "Acme Supplies",
+                    vendorpartnumber: "ACM-12345",
+                    purchaseprice: 25.50,
+                    quantity: 2,
+                    islotitem: "N",
+                    isserialitem: "N"
+                }
+            ];
+
+            // Instructions with JSON download link
             const instructionsHtml = `
                 <div style="margin-bottom: 20px; padding: 15px; background-color: #f5f5f5; border-radius: 5px;">
                     <h3 style="margin-top: 0;">Instructions</h3>
                     <ol>
-                        <li>Enter a <strong>Prospect Name</strong> - this will be used as a prefix for all External IDs 
+                        <li>Enter a <strong>Prospect Name</strong> - this will be used as a prefix for all External IDs
                             (e.g., "AcmeCorp" → "AcmeCorp_PartNumber123")</li>
-                        <li>Upload your <strong>CSV file</strong> containing the BOM data</li>
-                        <li>Your CSV should have a <strong>Hierarchy column</strong> with values like 1.0, 1.1, 1.1.1 to define structure</li>
+                        <li>Upload your <strong>CSV or JSON file</strong> containing the BOM data</li>
+                        <li>Your file should have a <strong>Hierarchy column/field</strong> with values like 1.0, 1.1, 1.1.1 to define structure</li>
                         <li>Click Next to preview and map columns</li>
                     </ol>
+                    <p style="margin-top: 10px;">
+                        <strong>JSON Option:</strong> For LLM-assisted BOM conversion,
+                        <a href="#" onclick="(function(){var d=${JSON.stringify(JSON.stringify(exampleJson, null, 2))};var b=new Blob([d],{type:'application/json'});var dlUrl=URL.createObjectURL(b);var a=document.createElement('a');a.href=dlUrl;a.download='bom_example.json';a.click();URL.revokeObjectURL(dlUrl);})();return false;">download example JSON template</a>
+                    </p>
                 </div>
             `;
             
@@ -92,16 +118,16 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 type: serverWidget.FieldType.TEXT,
                 label: 'Prospect Name'
             });
-            prospectField.isMandatory = true;
+            prospectField.isMandatory = false;  // Not mandatory because JSON files can include prospectName
             prospectField.setHelpText({
-                help: 'Used as prefix for External IDs to prevent collisions between prospects. Example: "NASElectronics" or "AcmeCorp"'
+                help: 'Used as prefix for External IDs to prevent collisions between prospects. Example: "NASElectronics" or "AcmeCorp". For JSON files, this can be included in the file instead.'
             });
 
             // File Upload
             const fileField = form.addField({
                 id: 'custpage_csv_file',
                 type: serverWidget.FieldType.FILE,
-                label: 'CSV File'
+                label: 'CSV or JSON File'
             });
             fileField.isMandatory = true;
 
@@ -136,7 +162,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
          * Step 2: Process uploaded file and show mapping form
          */
         function handleFileUpload(context) {
-            const prospectName = context.request.parameters.custpage_prospect_name;
+            let prospectName = context.request.parameters.custpage_prospect_name;
             const uploadedFile = context.request.files.custpage_csv_file;
 
             if (!uploadedFile) {
@@ -160,29 +186,60 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             // Load and parse file
             const fileObj = file.load({ id: fileId });
             const content = fileObj.getContents();
-            const parsedData = parseCSV(content);
+
+            // Auto-detect JSON vs CSV based on first non-whitespace character
+            const trimmedContent = content.trim();
+            const isJSON = trimmedContent.startsWith('{') || trimmedContent.startsWith('[');
+
+            let parsedData;
+            if (isJSON) {
+                parsedData = parseJSONFile(content, prospectName);
+                // Use JSON prospect name if user didn't provide one
+                if (parsedData.prospectName) {
+                    prospectName = parsedData.prospectName;
+                }
+            } else {
+                parsedData = parseCSV(content);
+            }
 
             if (parsedData.rows.length === 0) {
                 throw new Error('No data rows found in file');
             }
 
+            // Validate that we have a prospect name from either source
+            if (!prospectName || !prospectName.trim()) {
+                throw new Error('Prospect Name is required. Enter it in the form or include "prospectName" in your JSON file.');
+            }
+
             // Show mapping form
-            showMappingForm(context, prospectName, fileId, uploadedFile.name, parsedData);
+            showMappingForm(context, prospectName, fileId, uploadedFile.name, parsedData, isJSON);
         }
 
         /**
          * Show column mapping form with preview
+         * @param {Object} context - Suitelet context
+         * @param {string} prospectName - Prospect name
+         * @param {number} fileId - Uploaded file ID
+         * @param {string} fileName - Uploaded file name
+         * @param {Object} parsedData - Parsed file data { headers, rows }
+         * @param {boolean} isJSON - Whether the file was JSON format
          */
-        function showMappingForm(context, prospectName, fileId, fileName, parsedData) {
+        function showMappingForm(context, prospectName, fileId, fileName, parsedData, isJSON) {
             const form = serverWidget.createForm({
                 title: 'BOM Import - Step 2: Map Columns'
             });
+
+            // Attach client script for UX toggle improvements
+            form.clientScriptModulePath = './item_bom_create_cs.js';
+
+            // JSON indicator text
+            const jsonIndicator = isJSON ? ' <span style="color: #17a2b8;">(JSON - columns auto-mapped)</span>' : '';
 
             // Info section
             const infoHtml = `
                 <div style="margin-bottom: 20px; padding: 15px; background-color: #e8f4e8; border-radius: 5px; border-left: 4px solid #28a745;">
                     <strong>Prospect:</strong> ${escapeHtml(prospectName)}<br>
-                    <strong>File:</strong> ${escapeHtml(fileName)}<br>
+                    <strong>File:</strong> ${escapeHtml(fileName)}${jsonIndicator}<br>
                     <strong>Rows Found:</strong> ${parsedData.rows.length} data rows
                 </div>
                 <div style="margin-bottom: 15px; padding: 10px; background-color: #fff3cd; border-radius: 5px; border-left: 4px solid #ffc107;">
@@ -231,6 +288,13 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 label: 'Column Count'
             }).defaultValue = parsedData.headers.length;
             form.getField({ id: 'custpage_column_count' }).updateDisplayType({ displayType: serverWidget.FieldDisplayType.HIDDEN });
+
+            form.addField({
+                id: 'custpage_is_json',
+                type: serverWidget.FieldType.CHECKBOX,
+                label: 'Is JSON'
+            }).defaultValue = isJSON ? 'T' : 'F';
+            form.getField({ id: 'custpage_is_json' }).updateDisplayType({ displayType: serverWidget.FieldDisplayType.HIDDEN });
 
             // Defaults Section
             form.addFieldGroup({
@@ -414,6 +478,9 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 label: 'Column Mapping'
             });
 
+            // Build a set of valid FIELD_OPTIONS values for JSON exact matching
+            const validFieldValues = new Set(FIELD_OPTIONS.map(opt => opt.value).filter(v => v && v !== '_custom_'));
+
             // Create mapping dropdown for each column
             parsedData.headers.forEach((header, index) => {
                 const selectField = form.addField({
@@ -432,19 +499,41 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
                 });
 
                 // Auto-select based on header name
-                const autoMap = autoDetectMapping(header);
+                let autoMap = null;
+                let customFieldValue = '';
+
+                if (isJSON && header) {
+                    // JSON: exact match against FIELD_OPTIONS values
+                    if (validFieldValues.has(header)) {
+                        autoMap = header;
+                    } else if (header.startsWith('custitem_')) {
+                        // Custom field: select _custom_ and pre-fill the ID
+                        autoMap = '_custom_';
+                        customFieldValue = header;
+                    }
+                    // If no match, leave as Skip
+                } else {
+                    // CSV: use fuzzy header detection
+                    autoMap = autoDetectMapping(header);
+                }
+
                 if (autoMap) {
                     selectField.defaultValue = autoMap;
                 }
 
                 // Add companion text input for custom field ID
-                const customFieldId = form.addField({
+                const customFieldIdField = form.addField({
                     id: 'custpage_custom_field_' + index,
                     type: serverWidget.FieldType.TEXT,
                     label: '↳ Custom Field ID for: ' + (header || ('Column ' + (index + 1))),
                     container: 'custpage_mapping_group'
                 });
-                customFieldId.setHelpText({ help: 'Enter the field ID (e.g., custitem_my_field). Only used when "Custom Field" is selected above.' });
+                customFieldIdField.setHelpText({ help: 'Enter the field ID (e.g., custitem_my_field). Only used when "Custom Field" is selected above.' });
+
+                // Pre-fill custom field ID for JSON custitem_ headers
+                if (customFieldValue) {
+                    customFieldIdField.defaultValue = customFieldValue;
+                }
             });
 
             // Preview Section
@@ -641,7 +730,7 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             const scriptObj = runtime.getCurrentScript();
             const folderId = scriptObj.getParameter({ name: 'custscript_bom_suitelet_folder_id' });
 
-            const configFileName = fileName.replace(/\.csv$/i, '') + '_config.json';
+            const configFileName = fileName.replace(/\.(csv|json)$/i, '') + '_config.json';
             const configFile = file.create({
                 name: configFileName,
                 fileType: file.Type.JSON,
@@ -788,6 +877,54 @@ define(['N/ui/serverWidget', 'N/file', 'N/task', 'N/runtime', 'N/redirect', 'N/u
             }
 
             return { headers, rows };
+        }
+
+        /**
+         * Parse JSON content into the same format as parseCSV returns
+         * @param {string} content - JSON file content
+         * @param {string} prospectNameFromForm - prospect name entered by user (if any)
+         * @returns {Object} { headers: [], rows: [], prospectName: string|null }
+         */
+        function parseJSONFile(content, prospectNameFromForm) {
+            const data = JSON.parse(content);
+
+            // Handle both array format and object with items array
+            let items = Array.isArray(data) ? data : (data.items || []);
+            let jsonProspectName = null;
+
+            // Extract prospectName from JSON if present (only for object format)
+            if (!Array.isArray(data) && data.prospectName) {
+                jsonProspectName = data.prospectName;
+            }
+
+            if (items.length === 0) {
+                return { headers: [], rows: [], prospectName: null };
+            }
+
+            // Collect all unique keys from all items to form headers
+            const headerSet = new Set();
+            items.forEach(function(item) {
+                Object.keys(item).forEach(function(key) {
+                    headerSet.add(key);
+                });
+            });
+            const headers = Array.from(headerSet);
+
+            // Convert items to rows (arrays of values in header order)
+            const rows = items.map(function(item) {
+                return headers.map(function(header) {
+                    const val = item[header];
+                    // Convert values to strings for consistency with CSV
+                    return val !== undefined && val !== null ? String(val) : '';
+                });
+            });
+
+            // Determine final prospect name: user input takes priority if non-empty
+            const finalProspectName = (prospectNameFromForm && prospectNameFromForm.trim())
+                ? prospectNameFromForm
+                : jsonProspectName;
+
+            return { headers: headers, rows: rows, prospectName: finalProspectName };
         }
 
         /**
